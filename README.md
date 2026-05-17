@@ -14,9 +14,25 @@ Secrets are only usable via `run_with_secrets`, which injects them into a subpro
 ## Prerequisites
 
 - macOS (uses Security.framework + Touch ID flow)
-- [Bun](https://bun.sh) `>= 1.3.0`
+- Either [Bun](https://bun.sh) or Node.js/npm to launch the published package
 
-## Install and run locally
+## Run from GitHub Packages
+
+Configure the `@oleander` scope to use GitHub Packages:
+
+```bash
+npm config set @oleander:registry https://npm.pkg.github.com
+```
+
+Then run the published package directly without cloning or compiling locally:
+
+```bash
+bunx --package @oleander/mcp-env-keychain k-mcp
+# or
+npx --yes --package=@oleander/mcp-env-keychain k-mcp
+```
+
+## Develop locally
 
 ```bash
 git clone https://github.com/oleander/mcp-env-keychain.git
@@ -25,18 +41,12 @@ bun install
 bun run src/index.ts
 ```
 
-Or via scripts:
-
-```bash
-bun run start
-```
-
 ## Register with MCP clients
 
 ### Claude Code
 
 ```bash
-claude mcp add -s user k-mcp -- bun run /absolute/path/to/mcp-env-keychain/src/index.ts
+claude mcp add -s user k-mcp -- npx --yes --package=@oleander/mcp-env-keychain k-mcp
 ```
 
 ### Cursor (`~/.cursor/mcp.json`)
@@ -45,8 +55,8 @@ claude mcp add -s user k-mcp -- bun run /absolute/path/to/mcp-env-keychain/src/i
 {
   "mcpServers": {
     "k-mcp": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/mcp-env-keychain/src/index.ts"]
+      "command": "npx",
+      "args": ["--yes", "--package=@oleander/mcp-env-keychain", "k-mcp"]
     }
   }
 }
@@ -76,7 +86,7 @@ claude mcp add -s user k-mcp -- bun run /absolute/path/to/mcp-env-keychain/src/i
 {"name":"run_with_secrets","arguments":{"command":"echo $BACKEND_URL && curl -H \"Authorization: Bearer $STRIPE_API_KEY\" https://api.stripe.com/v1/charges","env_keys":["BACKEND_URL","STRIPE_API_KEY"]}}
 ```
 
-## Commands
+## Local development commands
 
 From `package.json`:
 
@@ -91,6 +101,6 @@ bun run compile    # compile to dist/k-mcp
 
 - **No Touch ID prompt appears:** Touch ID is requested only when `run_with_secrets` injects at least one `secret` key. Plain-only runs do not prompt.
 - **Prompt appears only once:** This is expected; unlock is cached for the server process/session lifetime.
-- **`bun: command not found`:** install Bun and ensure it is on `PATH`.
+- **`bun: command not found`:** install Bun for local development, or use the published package via `npx`.
 - **`get_plain` refuses a key:** the entry was saved as `secret`; use `run_with_secrets`.
 - **Index path in tests/automation:** set `K_MCP_INDEX_PATH` to point at a custom index file.

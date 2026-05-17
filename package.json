@@ -1,10 +1,13 @@
 {
-  "name": "k-mcp",
+  "name": "@oleander/mcp-env-keychain",
   "version": "0.2.0",
   "description": "MCP server for storing and using env secrets in the macOS Keychain (TypeScript on Bun)",
   "type": "module",
   "bin": {
     "k-mcp": "./src/index.ts"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
     "start": "bun run src/index.ts",
