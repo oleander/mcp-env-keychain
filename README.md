@@ -70,18 +70,33 @@ claude mcp add -s user k-mcp -- bunx --package @oleander/mcp-env-keychain k-mcp
 
 ## Core tools
 
-- `save_env(name, value, kind)`  
-  Store/update an entry. Refuses `kind="plain"` when the name looks secret (e.g. contains `KEY`, `TOKEN`, `SECRET`, `PASS`, etc).
-- `list_envs()`  
+All tools advertise an `outputSchema` and behavior annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) so MCP clients can render confirmations and rich types.
+
+- `save_env(name, value, kind)` — `idempotentHint`  
+  Store/update an entry. If the name looks like a secret (KEY/TOKEN/SECRET/PASS/PWD/CRED/AUTH) but `kind="plain"`, the server asks the user via the MCP elicitation channel to confirm. Clients without elicitation support get the legacy "refuse outright" behavior.
+- `list_envs()` — `readOnlyHint`, `idempotentHint`  
   Lists names, kinds, and timestamps only (never values).
-- `find_envs(pattern)`  
+- `find_envs(pattern)` — `readOnlyHint`, `idempotentHint`  
   Case-insensitive name search, metadata only.
-- `get_plain(name)`  
+- `get_plain(name)` — `readOnlyHint`, `idempotentHint`  
   Returns value only for entries stored as `kind="plain"`.
-- `delete_env(name)`  
+- `delete_env(name)` — `destructiveHint`, `idempotentHint`  
   Removes entry from index + Keychain.
-- `run_with_secrets(command, env_keys, cwd?, timeout?)`  
-  Runs a shell command with selected values injected as env vars.
+- `run_with_secrets(command, env_keys, cwd?, timeout?)` — `openWorldHint`  
+  Runs a shell command with selected values injected as env vars. On timeout, the partial stdout/stderr captured before the kill is returned alongside the error so you can debug what the subprocess actually did.
+
+## Resources
+
+- `keychain://env-names` — flat JSON array of stored names. Legacy alias preserved for v0.2.x compatibility.
+- `keychain://env/{name}` — per-env metadata (`{ name, kind, created_at, updated_at }`). The server's `list` callback enumerates one resource per stored env, and `complete.name` autocompletes from the current index. Values are **never** returned.
+- The server emits `notifications/resources/list_changed` after every successful `save_env` / `delete_env`, so clients refresh immediately.
+
+## Prompts
+
+User-invokable templates (surface as `/commands` in clients that support prompts):
+
+- `/import-env-file` — bulk-import vars from a `.env` file. Walks the agent through filtering placeholders, classifying secret vs plain, and saving each.
+- `/audit-stale` — list entries whose `updated_at` is older than N days (defaults to 90). Useful for credential rotation.
 
 ## Quickstart examples
 
