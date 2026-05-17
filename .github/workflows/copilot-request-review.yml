@@ -20,26 +20,53 @@ name: Copilot Review and Resolve
 on:
   pull_request_review:
     types: [submitted]
+  # Manual trigger for debugging / re-running specific branches. Inputs
+  # mirror the github.event.review.user.* fields the step `if:` blocks
+  # below read. Inputs metadata syntax:
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax
+  # All inputs flow into the workflow exclusively through env: vars and
+  # ${{ inputs.* }} expressions in `if:`/`group:` contexts — never
+  # interpolated directly inside a run: block.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to operate on'
+        required: true
+        type: string
+      review_user_type:
+        description: 'Synthesized github.event.review.user.type — gates the Bot-only cloud-agent branch'
+        required: false
+        default: 'Bot'
+        type: choice
+        options:
+          - Bot
+          - User
+      review_user_id:
+        description: 'Synthesized github.event.review.user.id (numeric, as string). 175728472 = copilot-pull-request-reviewer.'
+        required: true
+        type: string
+      review_user_login:
+        description: 'Synthesized github.event.review.user.login. Used with review_user_id/type to classify Copilot code-reviewer vs cloud-agent.'
+        required: true
+        type: string
 
 permissions:
   contents: read
   pull-requests: write
 
 concurrency:
-  group: copilot-request-review-${{ github.event.pull_request.number }}
+  # Coalesce so workflow_dispatch (no pull_request payload) groups on inputs.pr_number.
+  group: copilot-request-review-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: false
 
 env:
   MAX_COPILOT_REVIEWS: "5"
-  # In pull_request_review webhook payloads, Copilot bots present
-  # review.user.login as the display alias "Copilot" rather than the
-  # REST-API login (copilot-pull-request-reviewer[bot] /
-  # copilot-swe-agent[bot]). We discriminate by numeric user.id, which is
-  # stable across every GH API surface.
+  # Copilot uses different reviewer logins across webhook / REST / GraphQL
+  # surfaces. The code-reviewer bot is pinned by numeric user.id because
+  # pull_request_review payloads may expose only the display alias "Copilot";
+  # any other Bot surfaced as "Copilot" or as swe/cloud-agent is treated as
+  # the cloud-agent.
   CODE_REVIEWER_USER_ID: "175728472"  # copilot-pull-request-reviewer[bot]
-  # TODO: capture copilot-swe-agent[bot] user.id from the next live cloud-
-  # agent review and pin it here; until then Branch A falls back to a
-  # tolerant login-substring match.
   # Globally stable GraphQL bot node ID for copilot-pull-request-reviewer
   # (login: copilot-pull-request-reviewer, createdAt: 2024-07-16). Used by
   # the requestReviews mutation, which is the only call that re-triggers
@@ -59,7 +86,8 @@ jobs:
       GH_TOKEN: ${{ secrets.COPILOT_REQUEST_PAT }}
       HAS_COPILOT_REQUEST_PAT: ${{ secrets.COPILOT_REQUEST_PAT != '' }}
       GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      # Coalesced so workflow_dispatch (no pull_request payload) falls back to inputs.pr_number.
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
 
     steps:
       - name: Validate required Copilot request token
@@ -69,9 +97,97 @@ jobs:
           echo "GITHUB_TOKEN cannot request Copilot reviews via the GraphQL requestReviews mutation."
           exit 1
 
+      # ==== RESOLVE: unify webhook payload + workflow_dispatch inputs ====
+      # All downstream `if:` conditions read steps.vars.outputs.* so they
+      # behave identically under either trigger. On workflow_dispatch the
+      # github.event.review.* fields are null — inputs synthesize them, and
+      # pr_node_id is looked up via Octokit against the validated PR number.
+      - name: Resolve effective inputs
+        id: vars
+        uses: actions/github-script@v9
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_REVIEW_USER_TYPE: ${{ inputs.review_user_type }}
+          INPUT_REVIEW_USER_ID: ${{ inputs.review_user_id }}
+          INPUT_REVIEW_USER_LOGIN: ${{ inputs.review_user_login }}
+          WEBHOOK_PR_NUMBER: ${{ github.event.pull_request.number }}
+          WEBHOOK_PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+          WEBHOOK_REVIEW_USER_TYPE: ${{ github.event.review.user.type }}
+          WEBHOOK_REVIEW_USER_ID: ${{ github.event.review.user.id }}
+          WEBHOOK_REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
+        with:
+          github-token: ${{ env.GH_TOKEN }}
+          script: |
+            const value = (name) => process.env[name] ?? "";
+            const fail = (message) => {
+              throw new Error(message);
+            };
+
+            let prNumber;
+            let prNodeId;
+            let reviewUserType;
+            let reviewUserId;
+            let reviewUserLogin;
+            let isCodeReviewer;
+            let isCloudAgentReview;
+
+            if (value("EVENT_NAME") === "workflow_dispatch") {
+              prNumber = value("INPUT_PR_NUMBER");
+              reviewUserType = value("INPUT_REVIEW_USER_TYPE");
+              reviewUserId = value("INPUT_REVIEW_USER_ID");
+              reviewUserLogin = value("INPUT_REVIEW_USER_LOGIN");
+
+              if (!/^[1-9]\d*$/.test(prNumber)) {
+                fail("pr_number must be a positive integer without leading zeros");
+              }
+              if (!["Bot", "User"].includes(reviewUserType)) {
+                fail("review_user_type must be Bot or User");
+              }
+              if (!/^\d+$/.test(reviewUserId)) {
+                fail("review_user_id must be numeric");
+              }
+              if (/[\r\n]/.test(reviewUserLogin)) {
+                fail("review_user_login must be a single-line value");
+              }
+
+              const response = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: Number(prNumber),
+              });
+              prNodeId = response.data.node_id;
+            } else {
+              prNumber = value("WEBHOOK_PR_NUMBER");
+              prNodeId = value("WEBHOOK_PR_NODE_ID");
+              reviewUserType = value("WEBHOOK_REVIEW_USER_TYPE");
+              reviewUserId = value("WEBHOOK_REVIEW_USER_ID");
+              reviewUserLogin = value("WEBHOOK_REVIEW_USER_LOGIN");
+            }
+
+            isCodeReviewer = reviewUserId === value("CODE_REVIEWER_USER_ID");
+            isCloudAgentReview = reviewUserType === "Bot"
+              && !isCodeReviewer
+              && (
+                reviewUserLogin === "Copilot"
+                || /swe-agent|cloud-agent/.test(reviewUserLogin)
+              );
+
+            core.setOutput("pr_number", prNumber);
+            core.setOutput("pr_node_id", prNodeId);
+            core.setOutput("review_user_type", reviewUserType);
+            core.setOutput("review_user_id", reviewUserId);
+            core.setOutput("review_user_login", reviewUserLogin);
+            core.setOutput("is_code_reviewer", String(isCodeReviewer));
+            core.setOutput("is_cloud_agent_review", String(isCloudAgentReview));
+
       # ==== DEBUG: print every value used by step `if:` conditions ====
       # No `if:` — always runs. Each comparison value goes through env: so
       # untrusted strings (login, etc.) can't be injected into the shell.
+      # Three groups are printed:
+      #   1. raw webhook payload (populated only on pull_request_review)
+      #   2. workflow_dispatch inputs (populated only on manual trigger)
+      #   3. effective resolver outputs (what conditions actually read)
       - name: Debug — dump all comparison inputs
         env:
           REVIEW_USER_ID: ${{ github.event.review.user.id }}
@@ -84,6 +200,7 @@ jobs:
           REVIEW_AUTHOR_ASSOCIATION: ${{ github.event.review.author_association }}
           REVIEW_COMMIT_ID: ${{ github.event.review.commit_id }}
           PR_NUMBER_RAW: ${{ github.event.pull_request.number }}
+          PR_NODE_ID_RAW: ${{ github.event.pull_request.node_id }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
@@ -93,8 +210,19 @@ jobs:
           GH_EVENT_NAME: ${{ github.event_name }}
           GH_REPOSITORY: ${{ github.repository }}
           GH_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_REVIEW_USER_TYPE: ${{ inputs.review_user_type }}
+          INPUT_REVIEW_USER_ID: ${{ inputs.review_user_id }}
+          INPUT_REVIEW_USER_LOGIN: ${{ inputs.review_user_login }}
+          OUT_PR_NUMBER: ${{ steps.vars.outputs.pr_number }}
+          OUT_PR_NODE_ID: ${{ steps.vars.outputs.pr_node_id }}
+          OUT_REVIEW_USER_TYPE: ${{ steps.vars.outputs.review_user_type }}
+          OUT_REVIEW_USER_ID: ${{ steps.vars.outputs.review_user_id }}
+          OUT_REVIEW_USER_LOGIN: ${{ steps.vars.outputs.review_user_login }}
+          OUT_IS_CODE_REVIEWER: ${{ steps.vars.outputs.is_code_reviewer }}
+          OUT_IS_CLOUD_AGENT_REVIEW: ${{ steps.vars.outputs.is_cloud_agent_review }}
         run: |
-          printf '=== inputs the step if-conditions read ===\n'
+          printf '=== raw webhook payload (pull_request_review only) ===\n'
           printf '  review.user.id          = %q\n' "$REVIEW_USER_ID"
           printf '  review.user.login       = %q\n' "$REVIEW_USER_LOGIN"
           printf '  review.user.type        = %q\n' "$REVIEW_USER_TYPE"
@@ -115,67 +243,140 @@ jobs:
           printf '  github.event_name       = %q\n' "$GH_EVENT_NAME"
           printf '  github.repository       = %q\n' "$GH_REPOSITORY"
           printf '  github.repository_owner = %q\n' "$GH_REPOSITORY_OWNER"
+          printf '\n=== workflow_dispatch inputs (manual trigger only) ===\n'
+          printf '  inputs.pr_number         = %q\n' "$INPUT_PR_NUMBER"
+          printf '  inputs.review_user_type  = %q\n' "$INPUT_REVIEW_USER_TYPE"
+          printf '  inputs.review_user_id    = %q\n' "$INPUT_REVIEW_USER_ID"
+          printf '  inputs.review_user_login = %q\n' "$INPUT_REVIEW_USER_LOGIN"
+          printf '\n=== resolver outputs — what step if-conditions read ===\n'
+          printf '  steps.vars.outputs.pr_number         = %q\n' "$OUT_PR_NUMBER"
+          printf '  steps.vars.outputs.pr_node_id        = %q\n' "$OUT_PR_NODE_ID"
+          printf '  steps.vars.outputs.review_user_type  = %q\n' "$OUT_REVIEW_USER_TYPE"
+          printf '  steps.vars.outputs.review_user_id    = %q\n' "$OUT_REVIEW_USER_ID"
+          printf '  steps.vars.outputs.review_user_login = %q\n' "$OUT_REVIEW_USER_LOGIN"
+          printf '  steps.vars.outputs.is_code_reviewer  = %q\n' "$OUT_IS_CODE_REVIEWER"
+          printf '  steps.vars.outputs.is_cloud_agent_review = %q\n' "$OUT_IS_CLOUD_AGENT_REVIEW"
           printf '\n=== env: constants that conditions compare against ===\n'
           printf '  env.CODE_REVIEWER_USER_ID = %q\n' "$CODE_REVIEWER_USER_ID"
           printf '  env.COPILOT_BOT_NODE_ID   = %q\n' "$COPILOT_BOT_NODE_ID"
           printf '  env.MAX_COPILOT_REVIEWS   = %q\n' "$MAX_COPILOT_REVIEWS"
           printf '\n=== derived booleans (mirrors step if-expressions) ===\n'
-          if [ "$REVIEW_USER_ID" = "$CODE_REVIEWER_USER_ID" ]; then is_code_reviewer=true; else is_code_reviewer=false; fi
-          case "$REVIEW_USER_LOGIN" in *swe-agent*|*cloud-agent*) login_swe_or_cloud=true ;; *) login_swe_or_cloud=false ;; esac
-          printf '  review.user.id == CODE_REVIEWER_USER_ID    -> %s\n' "$is_code_reviewer"
-          printf '  review.user.type == "Bot"                  -> %s\n' "$([ "$REVIEW_USER_TYPE" = "Bot" ] && echo true || echo false)"
-          printf '  review.user.login contains swe/cloud-agent -> %s\n' "$login_swe_or_cloud"
+          printf '  outputs.is_code_reviewer      -> %s\n' "$OUT_IS_CODE_REVIEWER"
+          printf '  outputs.is_cloud_agent_review -> %s\n' "$OUT_IS_CLOUD_AGENT_REVIEW"
 
       # ==== CLOUDBOT: Resolve threads after its review ====
       - name: Resolve threads after cloud-agent review
-        if: |
-          github.event.review.user.type == 'Bot' &&
-          github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID) &&
-          (contains(github.event.review.user.login, 'swe-agent') ||
-           contains(github.event.review.user.login, 'cloud-agent'))
+        if: steps.vars.outputs.is_cloud_agent_review == 'true'
         env:
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          set -euo pipefail
           echo "Resolving review threads where cloud-agent replied…"
 
-          prNodeId=$(gh api graphql -F owner="$OWNER" -F name="$REPO" -F number="$PR_NUMBER" -f query='
-            query($owner: String!, $name: String!, $number: Int!) {
-              repository(owner: $owner, name: $name) {
-                pullRequest(number: $number) {
-                  reviewThreads(first: 100) {
-                    nodes {
-                      id
-                      isResolved
-                      comments(last: 1) {
+          tmp_dir=$(mktemp -d)
+          threads_json="$tmp_dir/threads.json"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          printf '[]\n' > "$threads_json"
+
+          cursor=""
+          while :; do
+            if [ -n "$cursor" ]; then
+              # shellcheck disable=SC2016
+              response=$(gh api graphql -F owner="$OWNER" -F name="$REPO" -F number="$PR_NUMBER" -f cursor="$cursor" -f query='
+                query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      reviewThreads(first: 100, after: $cursor) {
+                        pageInfo {
+                          hasNextPage
+                          endCursor
+                        }
                         nodes {
-                          author { login }
-                          body
-                          createdAt
+                          id
+                          isResolved
+                          comments(last: 1) {
+                            nodes {
+                              author {
+                                __typename
+                                login
+                                ... on Bot { databaseId }
+                                ... on User { databaseId }
+                              }
+                              body
+                              createdAt
+                            }
+                          }
                         }
                       }
                     }
                   }
                 }
-              }
-            }
-          ' --jq '.data.repository.pullRequest.reviewThreads.nodes' > threads.json)
+              ')
+            else
+              # shellcheck disable=SC2016
+              response=$(gh api graphql -F owner="$OWNER" -F name="$REPO" -F number="$PR_NUMBER" -f query='
+                query($owner: String!, $name: String!, $number: Int!) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      reviewThreads(first: 100) {
+                        pageInfo {
+                          hasNextPage
+                          endCursor
+                        }
+                        nodes {
+                          id
+                          isResolved
+                          comments(last: 1) {
+                            nodes {
+                              author {
+                                __typename
+                                login
+                                ... on Bot { databaseId }
+                                ... on User { databaseId }
+                              }
+                              body
+                              createdAt
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ')
+            fi
+
+            printf '%s' "$response" | jq '.data.repository.pullRequest.reviewThreads.nodes' > "$tmp_dir/page.json"
+            jq -s '.[0] + .[1]' "$threads_json" "$tmp_dir/page.json" > "$tmp_dir/threads.next.json"
+            mv "$tmp_dir/threads.next.json" "$threads_json"
+
+            has_next=$(printf '%s' "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+            if [ "$has_next" != "true" ]; then
+              break
+            fi
+            cursor=$(printf '%s' "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+          done
 
           count=0
-          jq -c '.' threads.json | jq -c '.[]' | while read thread; do
-            threadId=$(echo $thread | jq -r '.id')
-            isResolved=$(echo $thread | jq -r '.isResolved')
-            author=$(echo $thread | jq -r '.comments.nodes[0].author.login')
-            # GraphQL response uses the long-form bot login
-            # (copilot-swe-agent[bot] or copilot-cloud-agent[bot]); match either.
-            case "$author" in
-              *swe-agent*|*cloud-agent*) is_cloud_agent=1 ;;
-              *) is_cloud_agent=0 ;;
-            esac
-            if [ "$is_cloud_agent" = "1" ] && [ "$isResolved" = "false" ]; then
-              echo "Resolving thread $threadId…"
-              gh api graphql -F id="$threadId" -f query='
+          while IFS= read -r thread; do
+            thread_id=$(printf '%s' "$thread" | jq -r '.id')
+            is_resolved=$(printf '%s' "$thread" | jq -r '.isResolved')
+            author_type=$(printf '%s' "$thread" | jq -r '.comments.nodes[0].author.__typename // ""')
+            author_login=$(printf '%s' "$thread" | jq -r '.comments.nodes[0].author.login // ""')
+            author_id=$(printf '%s' "$thread" | jq -r '.comments.nodes[0].author.databaseId // ""')
+
+            is_cloud_agent=0
+            if [ "$author_type" = "Bot" ] && [ "$author_id" != "$CODE_REVIEWER_USER_ID" ]; then
+              case "$author_login" in
+                Copilot|*swe-agent*|*cloud-agent*) is_cloud_agent=1 ;;
+              esac
+            fi
+
+            if [ "$is_cloud_agent" = "1" ] && [ "$is_resolved" = "false" ]; then
+              echo "Resolving thread $thread_id…"
+              # shellcheck disable=SC2016
+              gh api graphql -F id="$thread_id" -f query='
                 mutation($id: ID!) {
                   resolveReviewThread(input: {threadId: $id}) {
                     thread { id isResolved }
@@ -184,7 +385,7 @@ jobs:
               ' > /dev/null
               count=$((count+1))
             fi
-          done
+          done < <(jq -c '.[]' "$threads_json")
           echo "Resolved $count thread(s)."
 
       # ==== CODE-REVIEWER: Prompt the cloud-agent to address its comments ====
@@ -196,7 +397,7 @@ jobs:
       # workflow lives outside the repo and doesn't emit workflow_run events
       # to it).
       - name: Prompt cloud-agent after code-reviewer review
-        if: github.event.review.user.id == fromJSON(env.CODE_REVIEWER_USER_ID)
+        if: steps.vars.outputs.review_user_id == env.CODE_REVIEWER_USER_ID
         run: |
           set -euo pipefail
           echo "Code-reviewer submitted a review; prompting cloud-agent…"
@@ -206,7 +407,7 @@ jobs:
       # ==== CODE-REVIEW: Only request review if not code-review agent & under max ====
       - name: Count prior Copilot review requests
         id: count
-        if: github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID)
+        if: steps.vars.outputs.is_code_reviewer != 'true' && steps.vars.outputs.is_cloud_agent_review != 'true'
         run: |
           count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/timeline" |
             jq -s '
@@ -222,10 +423,11 @@ jobs:
 
       - name: Request Copilot review if under limit
         if: |
-          github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID) &&
+          steps.vars.outputs.is_code_reviewer != 'true' &&
+          steps.vars.outputs.is_cloud_agent_review != 'true' &&
           fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
         env:
-          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+          PR_NODE_ID: ${{ steps.vars.outputs.pr_node_id }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
         run: |
@@ -239,6 +441,7 @@ jobs:
           # GITHUB_TOKEN can call this mutation but is silently a no-op for
           # the Copilot bot — COPILOT_REQUEST_PAT is required for it to fire.
           for attempt in 1 2; do
+            # shellcheck disable=SC2016
             if ! response=$(gh api graphql \
               -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{pullRequestId:$pr, botIds:[$bot]}){pullRequest{id}}}' \
               -f pr="$PR_NODE_ID" \
@@ -250,6 +453,7 @@ jobs:
 
             # Allow propagation, then verify Copilot is actually pending review.
             sleep 15
+            # shellcheck disable=SC2016
             pending=$(gh api graphql \
               -f query='query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewRequests(first:100){nodes{requestedReviewer{__typename ... on Bot{login}}}}}}}' \
               -f o="$REPO_OWNER" -f n="$REPO_NAME" -F pr="$PR_NUMBER" \
@@ -271,7 +475,8 @@ jobs:
 
       - name: Post info if Copilot review limit is reached
         if: |
-          github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID) &&
+          steps.vars.outputs.is_code_reviewer != 'true' &&
+          steps.vars.outputs.is_cloud_agent_review != 'true' &&
           fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
           echo "Copilot review request limit ($MAX_COPILOT_REVIEWS) reached. No further reviews will be requested automatically."
