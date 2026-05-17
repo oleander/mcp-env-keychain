@@ -1,11 +1,18 @@
-# Unified Copilot Review & Thread Resolution Workflow
+# Unified Copilot Review / Resolve / Bulk-Fix Workflow
 #
-# - When Copilot cloud-agent submits a review:
-#     → Resolves all review threads where the last reply is from the cloud-agent.
-# - When anyone ELSE submits a review (not code-review agent):
-#     → Requests a code-review from Copilot code-review agent, with a configurable max to avoid loops.
+# Reacts to every pull_request_review.submitted and routes by reviewer:
+#   - cloud-agent (copilot-swe-agent / copilot-cloud-agent):
+#       → Resolves all review threads whose last reply is from the cloud-agent.
+#   - code-reviewer (copilot-pull-request-reviewer, user.id 175728472):
+#       → Posts "@copilot deal with ALL review comments" so the cloud-agent
+#         picks up the review and applies fixes.
+#   - anyone else (humans, other bots):
+#       → Requests a fresh code review from Copilot via the GraphQL
+#         requestReviews mutation, with a configurable per-PR cap.
 #
-# Requires GH CLI, jq, and a COPILOT_REQUEST_PAT with `pull requests: write` and `repo` & `graphql` scopes.
+# Requires GH CLI, jq, and a COPILOT_REQUEST_PAT with `pull requests: write`
+# and `repo` & `graphql` scopes. GITHUB_TOKEN silently no-ops the
+# requestReviews mutation for the Copilot bot — only a user PAT works.
 
 name: Copilot Review and Resolve
 
@@ -113,6 +120,22 @@ jobs:
             fi
           done
           echo "Resolved $count thread(s)."
+
+      # ==== CODE-REVIEWER: Prompt the cloud-agent to address its comments ====
+      # Fires only when the code-reviewer bot (id 175728472) is the review
+      # author. Posts a single @copilot mention so copilot-swe-agent[bot]
+      # picks up the review and applies fixes. This replaces the dead
+      # copilot-bulk-reviewfix.yml workflow (workflow_run: ["Copilot"] never
+      # matched in practice because the dynamic "Copilot code review"
+      # workflow lives outside the repo and doesn't emit workflow_run events
+      # to it).
+      - name: Prompt cloud-agent after code-reviewer review
+        if: github.event.review.user.id == fromJSON(env.CODE_REVIEWER_USER_ID)
+        run: |
+          set -euo pipefail
+          echo "Code-reviewer submitted a review; prompting cloud-agent…"
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" \
+            --body "@copilot deal with ALL review comments"
 
       # ==== CODE-REVIEW: Only request review if not code-review agent & under max ====
       - name: Count prior Copilot review requests
