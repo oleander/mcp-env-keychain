@@ -135,12 +135,15 @@ jobs:
           ARCH="$(uname -m)"
           tar -C dist -czf "dist/mcp-env-keychain-macos-${ARCH}.tar.gz" mcp-env-keychain
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
-        with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          target_commitish: ${{ steps.release.outputs.target }}
-          files: dist/mcp-env-keychain-macos-*.tar.gz
+      - name: Create GitHub release with auto-generated notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.release.outputs.tag }}" \
+            --target "${{ steps.release.outputs.target }}" \
+            --title "${{ steps.release.outputs.tag }}" \
+            --generate-notes \
+            dist/mcp-env-keychain-macos-*.tar.gz
 
       - name: Publish package to GitHub Packages
         run: npm publish
