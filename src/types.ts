@@ -32,7 +32,13 @@ export type RunOk = Ok<{
   stderr: string;
   injected_keys: string[];
 }>;
-export type RunErr = Err & { injected_keys?: string[] };
+// RunErr can carry partial output on timeout — what the subprocess printed
+// before being killed is exactly what the user needs to debug.
+export type RunErr = Err & {
+  injected_keys?: string[];
+  stdout?: string;
+  stderr?: string;
+};
 export type RunResult = RunOk | RunErr;
 
 // ---- Persisted index schema ----
