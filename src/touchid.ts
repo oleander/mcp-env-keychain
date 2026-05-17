@@ -35,9 +35,7 @@ const libSystem = dlopen(`libSystem.B.${suffix}`, {
 const RTLD_NOW = 2;
 {
   const h = libSystem.symbols.dlopen(
-    Buffer.from(
-      "/System/Library/Frameworks/LocalAuthentication.framework/LocalAuthentication\0",
-    ),
+    Buffer.from("/System/Library/Frameworks/LocalAuthentication.framework/LocalAuthentication\0"),
     RTLD_NOW,
   );
   if (h === null || Number(h) === 0) {
@@ -53,19 +51,12 @@ export function biometricsAvailable(): boolean {
     if (LAContext === null || Number(LAContext) === 0) return false;
     const allocSel = objcCore.symbols.sel_registerName(Buffer.from("alloc\0"));
     const initSel = objcCore.symbols.sel_registerName(Buffer.from("init\0"));
-    const canEvalSel = objcCore.symbols.sel_registerName(
-      Buffer.from("canEvaluatePolicy:error:\0"),
-    );
+    const canEvalSel = objcCore.symbols.sel_registerName(Buffer.from("canEvaluatePolicy:error:\0"));
     const allocated = msgSend0(LAContext, allocSel);
     const ctx = msgSend0(allocated, initSel);
     if (ctx === null || Number(ctx) === 0) return false;
     return Boolean(
-      msgSendI64PtrRetBool(
-        ctx,
-        canEvalSel,
-        LA_POLICY_DEVICE_OWNER_AUTH_WITH_BIOMETRICS,
-        null,
-      ),
+      msgSendI64PtrRetBool(ctx, canEvalSel, LA_POLICY_DEVICE_OWNER_AUTH_WITH_BIOMETRICS, null),
     );
   } catch {
     return false;
@@ -119,14 +110,10 @@ async function swiftAuthenticate(reason: string): Promise<void> {
   if (exit === 0) return;
   if (exit === 2) {
     const m = stderr.replace(/^UNAVAILABLE:/, "");
-    throw new TouchIDNotAvailable(
-      `Touch ID is not available: ${m || "unknown"}`,
-    );
+    throw new TouchIDNotAvailable(`Touch ID is not available: ${m || "unknown"}`);
   }
   const m = stderr.replace(/^FAILED:/, "");
-  throw new TouchIDAuthFailed(
-    `Touch ID authentication failed: ${m || "user cancelled or failed"}`,
-  );
+  throw new TouchIDAuthFailed(`Touch ID authentication failed: ${m || "user cancelled or failed"}`);
 }
 
 // ---- Session gate ----

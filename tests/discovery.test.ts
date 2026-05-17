@@ -1,7 +1,7 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { buildServer, buildInstructions } from "../src/server.ts";
+import { buildInstructions, buildServer } from "../src/server.ts";
 import { saveEnv } from "../src/tools.ts";
 import { setupTestEnv } from "./helpers.ts";
 
@@ -37,7 +37,11 @@ describe("mcp-env-keychain discovery surfaces", () => {
 
     const empty = await client.readResource({ uri: "keychain://env-names" });
     const emptyFirst = empty.contents[0];
-    if (emptyFirst === undefined || !("text" in emptyFirst) || typeof emptyFirst.text !== "string") {
+    if (
+      emptyFirst === undefined ||
+      !("text" in emptyFirst) ||
+      typeof emptyFirst.text !== "string"
+    ) {
       throw new Error("empty catalog read returned no text content");
     }
     const emptyPayload = JSON.parse(emptyFirst.text) as string[];
@@ -47,7 +51,11 @@ describe("mcp-env-keychain discovery surfaces", () => {
 
     const filled = await client.readResource({ uri: "keychain://env-names" });
     const filledFirst = filled.contents[0];
-    if (filledFirst === undefined || !("text" in filledFirst) || typeof filledFirst.text !== "string") {
+    if (
+      filledFirst === undefined ||
+      !("text" in filledFirst) ||
+      typeof filledFirst.text !== "string"
+    ) {
       throw new Error("filled catalog read returned no text content");
     }
     const filledPayload = JSON.parse(filledFirst.text) as string[];
