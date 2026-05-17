@@ -248,10 +248,14 @@ export async function runWithSecrets(args: {
   }
 
   if (timedOut) {
+    // Preserve whatever the subprocess produced before being killed —
+    // that's exactly the output users need to debug a timeout.
     return {
       ok: false,
       error: `command exceeded timeout of ${timeout}s`,
       injected_keys: keys,
+      stdout: scrub(stdoutText, secretsOnly),
+      stderr: scrub(stderrText, secretsOnly),
     };
   }
 
