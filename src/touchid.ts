@@ -92,7 +92,20 @@ if !ok {
 exit(0)
 `;
 
+// Cached availability check — `Bun.which` is cheap but no need to repeat.
+let swiftPathCache: string | null | undefined;
+function findSwift(): string | null {
+  if (swiftPathCache === undefined) swiftPathCache = Bun.which("swift");
+  return swiftPathCache;
+}
+
 async function swiftAuthenticate(reason: string): Promise<void> {
+  if (findSwift() === null) {
+    throw new TouchIDNotAvailable(
+      "Touch ID requires the Swift toolchain (used to drive LAContext from a clean realm). " +
+        "Install Xcode Command Line Tools and retry:\n  xcode-select --install",
+    );
+  }
   // swift - reads source from stdin and JIT-compiles. Cold start ~1-2s.
   const proc = Bun.spawn(["swift", "-", reason], {
     stdin: "pipe",

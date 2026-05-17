@@ -22,7 +22,8 @@ export async function catalogPayload(): Promise<Catalog> {
 
 export async function catalogNamesPayload(): Promise<string[]> {
   const index = await loadIndex();
-  return [...new Set(Object.keys(index.entries))].sort((a, b) => a.localeCompare(b));
+  // Object.keys is already unique — no Set wrap needed.
+  return Object.keys(index.entries).sort((a, b) => a.localeCompare(b));
 }
 
 export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {

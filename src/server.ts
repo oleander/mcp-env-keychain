@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
+import pkg from "../package.json" with { type: "json" };
 import { loadIndex } from "./keychain.ts";
 import {
   catalogNamesPayload,
@@ -60,7 +61,7 @@ function toolText<T>(payload: T): {
 
 export async function buildServer(): Promise<McpServer> {
   const instructions = await buildInstructions();
-  const server = new McpServer({ name: "mcp-env-keychain", version: "0.2.0" }, { instructions });
+  const server = new McpServer({ name: "mcp-env-keychain", version: pkg.version }, { instructions });
 
   server.registerTool(
     "save_env",
