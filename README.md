@@ -73,7 +73,7 @@ claude mcp add -s user k-mcp -- bun run /absolute/path/to/mcp-env-keychain/src/i
 {"name":"save_env","arguments":{"name":"BACKEND_URL","value":"https://api.example.com","kind":"plain"}}
 {"name":"save_env","arguments":{"name":"STRIPE_API_KEY","value":"sk_live_...","kind":"secret"}}
 {"name":"get_plain","arguments":{"name":"BACKEND_URL"}}
-{"name":"run_with_secrets","arguments":{"command":"echo $BACKEND_URL && curl -H 'Authorization: Bearer $STRIPE_API_KEY' https://api.stripe.com/v1/charges","env_keys":["BACKEND_URL","STRIPE_API_KEY"]}}
+{"name":"run_with_secrets","arguments":{"command":"echo $BACKEND_URL && curl -H \"Authorization: Bearer $STRIPE_API_KEY\" https://api.stripe.com/v1/charges","env_keys":["BACKEND_URL","STRIPE_API_KEY"]}}
 ```
 
 ## Commands
