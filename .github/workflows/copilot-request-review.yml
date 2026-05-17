@@ -1,19 +1,19 @@
-# Copilot Review → Cursor Trigger Workflow
+# Copilot Review → Claude Trigger Workflow
 #
 # Reacts to every pull_request_review.submitted and routes by reviewer:
 #   - cloud-agent (copilot-swe-agent / copilot-cloud-agent):
 #       → Resolves all review threads whose last reply is from the cloud-agent.
 #   - code-reviewer (copilot-pull-request-reviewer, user.id 175728472):
-#       → Posts "@cursor review and address all review comments" so cursor
+#       → Posts "@claude review and address all review comments" so claude
 #         picks up the review and applies fixes.
 #   - anyone else (humans, other bots):
-#       → Posts "@cursor review this PR" (capped per PR to avoid loops).
+#       → Posts "@claude review this PR" (capped per PR to avoid loops).
 #
 # Requires GH CLI, jq, and a COPILOT_REQUEST_PAT (any user PAT works — the
 # name is preserved for compatibility with the existing secret). For a
 # classic PAT, use `repo`; for a fine-grained PAT, grant repository
 # `Pull requests: write`. The PAT is used so PR comments are authored by a
-# real user account, which is what triggers cursor's @-mention bot.
+# real user account, which is what triggers claude's @-mention bot.
 
 name: Copilot Review and Resolve
 
@@ -60,18 +60,18 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  MAX_CURSOR_PINGS: "5"
+  MAX_CLAUDE_PINGS: "5"
   # Copilot uses different reviewer logins across webhook / REST / GraphQL
   # surfaces. The code-reviewer bot is pinned by numeric user.id because
   # pull_request_review payloads may expose only the display alias "Copilot";
   # any other Bot surfaced as "Copilot" or as swe/cloud-agent is treated as
-  # the cloud-agent. Cursor is invoked via @-mention comments below, not by
+  # the cloud-agent. Claude is invoked via @-mention comments below, not by
   # reviewer registration — no bot node id is needed.
   CODE_REVIEWER_USER_ID: "175728472"  # copilot-pull-request-reviewer[bot]
   # Exact body text we post for "request a fresh review" pings. Used as the
   # sentinel when counting prior pings authored by this workflow, so user-
-  # typed @cursor mentions in other comments do not eat the rate-limit budget.
-  CURSOR_PING_BODY: "@cursor review this PR"
+  # typed @claude mentions in other comments do not eat the rate-limit budget.
+  CLAUDE_PING_BODY: "@claude review this PR"
 
 jobs:
   main:
@@ -253,8 +253,8 @@ jobs:
           printf '  steps.vars.outputs.is_cloud_agent_review = %q\n' "$OUT_IS_CLOUD_AGENT_REVIEW"
           printf '\n=== env: constants that conditions compare against ===\n'
           printf '  env.CODE_REVIEWER_USER_ID = %q\n' "$CODE_REVIEWER_USER_ID"
-          printf '  env.MAX_CURSOR_PINGS      = %q\n' "$MAX_CURSOR_PINGS"
-          printf '  env.CURSOR_PING_BODY      = %q\n' "$CURSOR_PING_BODY"
+          printf '  env.MAX_CLAUDE_PINGS      = %q\n' "$MAX_CLAUDE_PINGS"
+          printf '  env.CLAUDE_PING_BODY      = %q\n' "$CLAUDE_PING_BODY"
           printf '\n=== derived booleans (mirrors step if-expressions) ===\n'
           printf '  outputs.is_code_reviewer      -> %s\n' "$OUT_IS_CODE_REVIEWER"
           printf '  outputs.is_cloud_agent_review -> %s\n' "$OUT_IS_CLOUD_AGENT_REVIEW"
@@ -391,45 +391,45 @@ jobs:
       # matched in practice because the dynamic "Copilot code review"
       # workflow lives outside the repo and doesn't emit workflow_run events
       # to it).
-      - name: Prompt cursor after code-reviewer review
+      - name: Prompt claude after code-reviewer review
         if: steps.vars.outputs.review_user_id == env.CODE_REVIEWER_USER_ID
         run: |
           set -euo pipefail
-          echo "Code-reviewer submitted a review; prompting cursor…"
+          echo "Code-reviewer submitted a review; prompting claude…"
           gh pr comment "$PR_NUMBER" --repo "$GH_REPO" \
-            --body "@cursor review and address all review comments"
+            --body "@claude review and address all review comments"
 
-      # ==== REQUEST-FRESH-REVIEW: Ping cursor unless this run was triggered by ====
+      # ==== REQUEST-FRESH-REVIEW: Ping claude unless this run was triggered by ====
       # ==== a Copilot reviewer (code-reviewer / cloud-agent) and we already   ====
-      # ==== posted CURSOR_PING_BODY MAX_CURSOR_PINGS times on this PR.        ====
-      - name: Count prior cursor pings
+      # ==== posted CLAUDE_PING_BODY MAX_CLAUDE_PINGS times on this PR.        ====
+      - name: Count prior claude pings
         id: count
         if: steps.vars.outputs.is_code_reviewer != 'true' && steps.vars.outputs.is_cloud_agent_review != 'true'
         run: |
           set -euo pipefail
           count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" |
-            jq -s --arg sentinel "$CURSOR_PING_BODY" '
+            jq -s --arg sentinel "$CLAUDE_PING_BODY" '
               add // []
               | [.[] | select((.body // "") == $sentinel)]
               | length
             ')
           echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Cursor has been pinged $count time(s) (max: $MAX_CURSOR_PINGS)"
+          echo "Claude has been pinged $count time(s) (max: $MAX_CLAUDE_PINGS)"
 
-      - name: Post cursor review prompt if under limit
+      - name: Post claude review prompt if under limit
         if: |
           steps.vars.outputs.is_code_reviewer != 'true' &&
           steps.vars.outputs.is_cloud_agent_review != 'true' &&
-          fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_CURSOR_PINGS)
+          fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_CLAUDE_PINGS)
         run: |
           set -euo pipefail
-          echo "Posting cursor review prompt on PR #${PR_NUMBER}…"
-          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "$CURSOR_PING_BODY"
+          echo "Posting claude review prompt on PR #${PR_NUMBER}…"
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "$CLAUDE_PING_BODY"
 
-      - name: Post info if cursor ping limit is reached
+      - name: Post info if claude ping limit is reached
         if: |
           steps.vars.outputs.is_code_reviewer != 'true' &&
           steps.vars.outputs.is_cloud_agent_review != 'true' &&
-          fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_CURSOR_PINGS)
+          fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_CLAUDE_PINGS)
         run: |
-          echo "Cursor ping limit ($MAX_CURSOR_PINGS) reached. No further pings will be sent automatically."
+          echo "Claude ping limit ($MAX_CLAUDE_PINGS) reached. No further pings will be sent automatically."
