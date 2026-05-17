@@ -1,30 +1,35 @@
 # mcp-env-keychain
 
-MCP server for macOS that stores environment-variable values in the Keychain and lets an LLM use them safely. `secret` values are not returned by tools or tool responses; `plain` values may be returned to the client/chat transcript by design.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-%40oleander%2Fmcp--env--keychain-blue)](https://github.com/oleander/mcp-env-keychain/pkgs/npm/mcp-env-keychain)
 
-## Security model
+An MCP server for macOS that stores environment-variable values in the system Keychain and lets an LLM **use** them in shell commands without their values ever entering the chat transcript. Entries are split into two kinds: `plain` values (URLs, hostnames) that can be read back, and `secret` values (API keys, tokens) that can only be injected into a subprocess via `run_with_secrets` — gated by Touch ID and scrubbed from captured output.
 
-Each stored entry has a `kind`:
+## Use cases
 
-- `plain`: non-sensitive values (URLs, usernames). Can be read with `get_plain`.
-- `secret`: sensitive values (API keys/tokens). **Cannot** be read back by any tool.
-
-Secrets are only usable via `run_with_secrets`, which injects them into a subprocess environment. Output is scrubbed to redact accidental secret echoes.
+- Run a `curl` against a paid API in a Claude Code session without pasting the bearer token into chat.
+- Let an agent inspect, list, or search what env vars are available without ever exposing their values.
+- Use `BACKEND_URL`-style plain values directly in chat output while keeping `STRIPE_API_KEY`-style secrets locked behind Touch ID.
+- Replace ad-hoc `.env` files in agent workflows with a Keychain-backed store; lifetime auth is one biometric prompt per server process.
 
 ## Prerequisites
 
-- macOS (uses Security.framework + Touch ID flow)
-- [Bun](https://bun.sh) `>= 1.3.0` (required even when launching with `npx`, because the `k-mcp` bin runs on Bun)
-- npm authentication for GitHub Packages when installing from `npm.pkg.github.com`
+- macOS (uses `Security.framework` and `LocalAuthentication.framework`).
+- [Bun](https://bun.sh) `>= 1.3.0` — required at runtime even when launched with `npx`, because the `k-mcp` bin runs on Bun.
+- An authenticated [`gh`](https://cli.github.com) CLI for installing from GitHub Packages.
 
-## Run from GitHub Packages
+## Installation
+
+### Authenticate with GitHub Packages
 
 ```bash
 npm config set @oleander:registry https://npm.pkg.github.com
 npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"
 ```
 
-Then launch the server:
+The token needs `read:packages`. Run `gh auth status` to confirm.
+
+### Run the server
 
 ```bash
 bunx --package @oleander/mcp-env-keychain@latest mcp-env-keychain
@@ -32,27 +37,29 @@ bunx --package @oleander/mcp-env-keychain@latest mcp-env-keychain
 npx --yes --package=@oleander/mcp-env-keychain@latest mcp-env-keychain
 ```
 
-The auth command assumes you are logged into the GitHub CLI with a token that has package access. To check, run `gh auth status`. `npx` is supported as a package launcher, but it still needs `bun` on `PATH` because this MCP server uses Bun-specific APIs. The package also keeps `k-mcp` as a shorter binary alias.
+The package also installs `k-mcp` as a shorter binary alias. To check the published version, use `npm view @oleander/mcp-env-keychain@latest version --registry=https://npm.pkg.github.com`.
 
-To check the published version, use `npm view @oleander/mcp-env-keychain@latest version --registry=https://npm.pkg.github.com`, not `npx`.
+Do not include `run` in these commands — `npx run @oleander/mcp-env-keychain` and `bunx run @oleander/mcp-env-keychain` try to execute a different `run` command instead of this server.
 
-Do not include `run` in these commands. `npx run @oleander/mcp-env-keychain@latest` and `bunx run @oleander/mcp-env-keychain@latest` try to execute a different `run` command/package instead of the MCP server binary.
-
-## Develop locally
-
-```bash
-git clone https://github.com/oleander/mcp-env-keychain.git
-cd mcp-env-keychain
-bun install
-bun run start
-```
-
-## Register with MCP clients
+## Configure your MCP client
 
 ### Claude Code
 
 ```bash
 claude mcp add -s user k-mcp -- bunx --package @oleander/mcp-env-keychain k-mcp
+```
+
+### Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`)
+
+```json
+{
+  "mcpServers": {
+    "k-mcp": {
+      "command": "bunx",
+      "args": ["--package", "@oleander/mcp-env-keychain", "k-mcp"]
+    }
+  }
+}
 ```
 
 ### Cursor (`~/.cursor/mcp.json`)
@@ -68,38 +75,86 @@ claude mcp add -s user k-mcp -- bunx --package @oleander/mcp-env-keychain k-mcp
 }
 ```
 
-## Core tools
+## Security model
 
-- `save_env(name, value, kind)`  
-  Store/update an entry. Refuses `kind="plain"` when the name looks secret (e.g. contains `KEY`, `TOKEN`, `SECRET`, `PASS`, etc).
-- `list_envs()`  
-  Lists names, kinds, and timestamps only (never values).
-- `find_envs(pattern)`  
-  Case-insensitive name search, metadata only.
-- `get_plain(name)`  
-  Returns value only for entries stored as `kind="plain"`.
-- `delete_env(name)`  
-  Removes entry from index + Keychain.
-- `run_with_secrets(command, env_keys, cwd?, timeout?)`  
-  Runs a shell command with selected values injected as env vars.
+Every entry has a `kind`:
+
+- `plain` — non-sensitive values (URLs, hostnames, usernames). Retrievable via `get_plain`.
+- `secret` — credentials (API keys, tokens). **Never** returned by any tool or resource. The only way to use a secret is `run_with_secrets`, which injects it into a subprocess `env` for one command.
+
+Three independent layers prevent a secret value from reaching the chat transcript:
+
+1. **API shape.** `list_envs`, `find_envs`, `get_plain` (for `kind="secret"`), and the `keychain://env-names` resource do not return values. The TypeScript type system pins `get_plain`'s success return to `kind="plain"` at compile time.
+2. **Output scrubbing.** Stdout and stderr captured by `run_with_secrets` are post-processed: any literal secret value of length ≥ 4 is replaced with `[REDACTED:NAME]`. This catches accidents like `echo $STRIPE_KEY`.
+3. **Error sanitization.** Errors from `run_with_secrets` are constructed from key names and exception types only — never from values.
+
+**Touch ID gate.** `run_with_secrets` prompts for Touch ID **once per server process**, only when at least one `kind="secret"` value is injected. Plain-only invocations never prompt. Subsequent secret-using calls in the same session are gate-free.
+
+**Auto-refusal on save.** `save_env` refuses `kind="plain"` when the name matches the secret-hint pattern (`KEY`, `TOKEN`, `SECRET`, `PASS`, `PWD`, `CRED`, `AUTH`). This prevents a later `get_plain` from leaking a value that was misclassified at save time.
+
+See [SECURITY.md](SECURITY.md) for the full threat model and reporting policy.
+
+## Tools
+
+| Tool | Returns values? | Description |
+|---|---|---|
+| `save_env(name, value, kind)` | no | Store/update a `plain` or `secret` entry. Refuses `kind="plain"` for secret-looking names. |
+| `list_envs()` | no | All entries with name, kind, `created_at`, `updated_at`. Values never included. |
+| `find_envs(pattern)` | no | Case-insensitive substring search over names. Metadata only. |
+| `get_plain(name)` | yes (plain only) | Returns the value; refuses if the entry is `kind="secret"`. |
+| `delete_env(name)` | no | Remove from both index and Keychain. |
+| `run_with_secrets(command, env_keys, cwd?, timeout?)` | yes (scrubbed stdout/stderr) | Run a shell command with selected values injected as env vars; output has literal secret values redacted. `timeout` is in seconds, default 60. |
+
+## Resources
+
+| Resource | URI | MIME | Description |
+|---|---|---|---|
+| Stored env names | `keychain://env-names` | `application/json` | Sorted unique array of stored env names. Re-read on every access. No values, kinds, or timestamps. Counterpart to `list_envs` for clients that prefer resource subscriptions over tool calls. |
+
+The server also embeds a name snapshot in its MCP `initialize` instructions, so the LLM sees what's stored at handshake without an extra round-trip.
 
 ## Quickstart examples
 
+Store a plain value:
+
 ```json
 {"name":"save_env","arguments":{"name":"BACKEND_URL","value":"https://api.example.com","kind":"plain"}}
+```
+
+Store a secret (refused if you mistakenly pass `kind="plain"`):
+
+```json
 {"name":"save_env","arguments":{"name":"STRIPE_API_KEY","value":"sk_live_...","kind":"secret"}}
+```
+
+Read a plain value back:
+
+```json
 {"name":"get_plain","arguments":{"name":"BACKEND_URL"}}
-{"name":"run_with_secrets","arguments":{"command":"echo $BACKEND_URL && curl -H \"Authorization: Bearer $STRIPE_API_KEY\" https://api.stripe.com/v1/charges","env_keys":["BACKEND_URL","STRIPE_API_KEY"]}}
+```
+
+Use a secret in a command (Touch ID prompts on first use of the session; `sk_live_...` is replaced with `[REDACTED:STRIPE_API_KEY]` in the returned stdout):
+
+```json
+{"name":"run_with_secrets","arguments":{"command":"curl -H \"Authorization: Bearer $STRIPE_API_KEY\" $BACKEND_URL/v1/charges","env_keys":["BACKEND_URL","STRIPE_API_KEY"]}}
+```
+
+## Develop locally
+
+```bash
+git clone https://github.com/oleander/mcp-env-keychain.git
+cd mcp-env-keychain
+bun install
+bun run start
 ```
 
 ## Commands
-
-From `package.json`:
 
 ```bash
 bun run start      # run server
 bun test           # test suite
 bun run typecheck  # tsc --noEmit
+bun run lint       # biome check
 bun run compile    # compile to dist/mcp-env-keychain
 ```
 
@@ -109,9 +164,13 @@ Pushing a tag like `v0.2.1` triggers the `Release` GitHub Actions workflow, whic
 
 ## Troubleshooting
 
-- **No Touch ID prompt appears:** Touch ID is requested only when `run_with_secrets` injects at least one `secret` key. Plain-only runs do not prompt.
-- **Prompt appears only once:** This is expected; unlock is cached for the server process/session lifetime.
-- **`bun: command not found`:** install Bun and ensure it is on `PATH`.
-- **GitHub Packages install returns 401/403:** run `gh auth status` and confirm the active token has `read:packages` or `write:packages`, then run `npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"`.
-- **`get_plain` refuses a key:** the entry was saved as `secret`; use `run_with_secrets`.
-- **Index path in tests/automation:** set `K_MCP_INDEX_PATH` to point at a custom index file.
+- **No Touch ID prompt appears.** Touch ID is requested only when `run_with_secrets` injects at least one `secret` key. Plain-only runs do not prompt.
+- **Prompt appears only once.** Expected; unlock is cached for the server process/session lifetime.
+- **`bun: command not found`.** Install Bun and ensure it is on `PATH`.
+- **GitHub Packages install returns 401/403.** Run `gh auth status` and confirm the active token has `read:packages` or `write:packages`, then run `npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"`.
+- **`get_plain` refuses a key.** The entry was saved as `secret`; use `run_with_secrets`.
+- **Index path in tests/automation.** Set `K_MCP_INDEX_PATH` to point at a custom index file.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
