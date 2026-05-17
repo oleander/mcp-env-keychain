@@ -26,6 +26,8 @@ export type FindEnvsResult = { pattern: string; count: number; entries: CatalogE
 export type GetPlainResult = Result<{ name: string; kind: "plain"; value: string }>;
 export type DeleteEnvResult = Result<{ name: string }>;
 
+export type EnvMetadata = { name: string; kind: Kind; created_at: string; updated_at: string };
+
 export type RunOk = Ok<{
   exit_code: number;
   stdout: string;
