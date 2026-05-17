@@ -12,13 +12,34 @@ import type {
   Catalog,
   DeleteEnvResult,
   Entry,
+  EnvMetadata,
   FindEnvsResult,
   GetPlainResult,
   ListEnvsResult,
+  Result,
   RunResult,
   SaveEnvArgs,
   SaveEnvResult,
 } from "./types.ts";
+
+// ---- Index-changed notifier seam ----
+//
+// server.ts wires this to `mcpServer.sendResourceListChanged()` so clients
+// refresh their resource list when names appear or disappear. Tests leave it
+// unset (or install a counter). Fire-and-forget — never throws to callers.
+type IndexChangeFn = () => void;
+let onIndexChange: IndexChangeFn | null = null;
+export function setOnIndexChange(fn: IndexChangeFn | null): void {
+  onIndexChange = fn;
+}
+function notifyIndexChanged(): void {
+  try {
+    onIndexChange?.();
+  } catch (e) {
+    // Notifications must never break a tool call.
+    console.error("mcp-env-keychain: sendResourceListChanged failed:", e);
+  }
+}
 
 export async function catalogPayload(): Promise<Catalog> {
   const index = await loadIndex();
@@ -32,6 +53,26 @@ export async function catalogNamesPayload(): Promise<string[]> {
   const index = await loadIndex();
   // Object.keys is already unique — no Set wrap needed.
   return Object.keys(index.entries).sort((a, b) => a.localeCompare(b));
+}
+
+// Read handler for the keychain://env/{name} resource template. Returns
+// metadata only — never the value, regardless of kind. The Result envelope
+// lets the resource handler in server.ts surface "not found" cleanly.
+export async function getEnvMetadata(rawName: string): Promise<Result<{ metadata: EnvMetadata }>> {
+  const name = normalizeName(rawName);
+  if (!name) return { ok: false, error: "name is required" };
+  const index = await loadIndex();
+  const entry = index.entries[name];
+  if (!entry) return { ok: false, error: `no env named '${name}'` };
+  return {
+    ok: true,
+    metadata: {
+      name,
+      kind: entry.kind,
+      created_at: entry.created_at,
+      updated_at: entry.updated_at,
+    },
+  };
 }
 
 export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
@@ -60,6 +101,7 @@ export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
   };
   index.entries[name] = entry;
   await saveIndex(index);
+  notifyIndexChanged();
 
   return { ok: true, name, kind: args.kind };
 }
@@ -118,6 +160,7 @@ export async function deleteEnv(rawName: string): Promise<DeleteEnvResult> {
   }
   delete index.entries[name];
   await saveIndex(index);
+  notifyIndexChanged();
   return { ok: true, name };
 }
 
