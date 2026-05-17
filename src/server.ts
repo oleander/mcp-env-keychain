@@ -61,7 +61,10 @@ function toolText<T>(payload: T): {
 
 export async function buildServer(): Promise<McpServer> {
   const instructions = await buildInstructions();
-  const server = new McpServer({ name: "mcp-env-keychain", version: pkg.version }, { instructions });
+  const server = new McpServer(
+    { name: "mcp-env-keychain", version: pkg.version },
+    { instructions },
+  );
 
   server.registerTool(
     "save_env",
