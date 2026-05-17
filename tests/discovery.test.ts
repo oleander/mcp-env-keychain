@@ -145,4 +145,28 @@ describe("mcp-env-keychain discovery surfaces", () => {
     await deleteEnv("BACKEND_URL");
     expect(n).toBe(3);
   });
+
+  test("tools/list advertises outputSchema and annotations on every tool", async () => {
+    const server = await buildServer();
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await server.connect(st);
+    await client.connect(ct);
+
+    const { tools } = await client.listTools();
+    const byName = new Map(tools.map((t) => [t.name, t]));
+
+    for (const t of tools) {
+      expect(t.outputSchema).toBeDefined();
+    }
+
+    expect(byName.get("list_envs")?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get("list_envs")?.annotations?.idempotentHint).toBe(true);
+    expect(byName.get("find_envs")?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get("get_plain")?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get("save_env")?.annotations?.idempotentHint).toBe(true);
+    expect(byName.get("delete_env")?.annotations?.destructiveHint).toBe(true);
+    expect(byName.get("delete_env")?.annotations?.idempotentHint).toBe(true);
+    expect(byName.get("run_with_secrets")?.annotations?.openWorldHint).toBe(true);
+  });
 });

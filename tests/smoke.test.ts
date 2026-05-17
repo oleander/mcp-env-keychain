@@ -181,4 +181,23 @@ describe("index reliability (B2, B3, B4)", () => {
     const siblings = readdirSync(dir);
     expect(siblings.some((f) => f.startsWith("index.json.corrupt."))).toBe(true);
   });
+
+  // B7: preserved timeout output
+  test("run_with_secrets timeout preserves any captured stdout/stderr", async () => {
+    // sleep 2 (not 5) so the bash subprocess's pipes close well within
+    // bun:test's per-test cap on slow CI runners. The 1s timeout still
+    // fires first, so the test still proves preservation-on-timeout.
+    const r = await runWithSecrets({
+      command: 'echo "first line"; echo "second line" >&2; sleep 2',
+      env_keys: [],
+      timeout: 1,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("timeout");
+      // The kill happens after the early echoes drained.
+      expect(r.stdout).toContain("first line");
+      expect(r.stderr).toContain("second line");
+    }
+  });
 });
