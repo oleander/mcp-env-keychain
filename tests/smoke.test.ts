@@ -1,12 +1,5 @@
-import { describe, expect, test, beforeEach } from "bun:test";
-import {
-  saveEnv,
-  listEnvs,
-  findEnvs,
-  getPlain,
-  deleteEnv,
-  runWithSecrets,
-} from "../src/tools.ts";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { deleteEnv, findEnvs, getPlain, listEnvs, runWithSecrets, saveEnv } from "../src/tools.ts";
 import { setupTestEnv } from "./helpers.ts";
 
 describe("mcp-env-keychain tools (smoke)", () => {
@@ -15,7 +8,11 @@ describe("mcp-env-keychain tools (smoke)", () => {
   });
 
   test("save_env (plain URL) succeeds", async () => {
-    const r = await saveEnv({ name: "BACKEND_URL", value: "https://api.example.com", kind: "plain" });
+    const r = await saveEnv({
+      name: "BACKEND_URL",
+      value: "https://api.example.com",
+      kind: "plain",
+    });
     expect(r.ok).toBe(true);
   });
 
@@ -83,7 +80,11 @@ describe("mcp-env-keychain tools (smoke)", () => {
 
   test("run_with_secrets injects values and scrubs the secret from stdout", async () => {
     await saveEnv({ name: "BACKEND_URL", value: "https://api.example.com", kind: "plain" });
-    await saveEnv({ name: "STRIPE_API_KEY", value: "sk_live_thisisverysecret_abc123", kind: "secret" });
+    await saveEnv({
+      name: "STRIPE_API_KEY",
+      value: "sk_live_thisisverysecret_abc123",
+      kind: "secret",
+    });
     const r = await runWithSecrets({
       command: 'echo "URL=$BACKEND_URL"; echo "OOPS=$STRIPE_API_KEY"',
       env_keys: ["BACKEND_URL", "STRIPE_API_KEY"],
