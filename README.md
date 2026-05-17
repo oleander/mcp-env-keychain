@@ -97,7 +97,7 @@ bun run compile    # compile to dist/mcp-env-keychain
 
 ## Releases
 
-Pushing a tag like `v0.2.1` triggers the `Release` GitHub Actions workflow, which builds a precompiled macOS binary and uploads `mcp-env-keychain-macos-<arch>.tar.gz` to the GitHub release. The package metadata is set up for publishing `@oleander/mcp-env-keychain` to GitHub Packages.
+Pushing a tag like `v0.2.1` triggers the `Release` GitHub Actions workflow, which verifies the package, builds a precompiled macOS binary, uploads `mcp-env-keychain-macos-<arch>.tar.gz` to the GitHub release, and publishes `@oleander/mcp-env-keychain` to GitHub Packages.
 
 ## Troubleshooting
 
