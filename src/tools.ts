@@ -1,11 +1,4 @@
-import {
-  keychain,
-  loadIndex,
-  saveIndex,
-  looksSecret,
-  now,
-  scrub,
-} from "./keychain.ts";
+import { keychain, loadIndex, looksSecret, now, saveIndex, scrub } from "./keychain.ts";
 import { ensureUnlocked, TouchIDAuthFailed, TouchIDNotAvailable } from "./touchid.ts";
 import type {
   Catalog,
@@ -137,7 +130,7 @@ export async function runWithSecrets(args: {
   const command = args.command;
   const timeout = args.timeout ?? 60;
 
-  if (!command || !command.trim()) {
+  if (!command?.trim()) {
     return { ok: false, error: "command is required" };
   }
 

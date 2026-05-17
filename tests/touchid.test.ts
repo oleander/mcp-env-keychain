@@ -1,6 +1,6 @@
-import { describe, expect, test, beforeEach } from "bun:test";
-import { saveEnv, runWithSecrets } from "../src/tools.ts";
-import { setupTestEnv, installAuthCounter, installFailingAuth } from "./helpers.ts";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { runWithSecrets, saveEnv } from "../src/tools.ts";
+import { installAuthCounter, installFailingAuth, setupTestEnv } from "./helpers.ts";
 
 describe("Touch ID gate", () => {
   beforeEach(() => {

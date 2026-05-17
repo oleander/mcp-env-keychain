@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
+import { loadIndex } from "./keychain.ts";
 import {
   catalogNamesPayload,
   deleteEnv,
@@ -9,7 +10,6 @@ import {
   runWithSecrets,
   saveEnv,
 } from "./tools.ts";
-import { loadIndex } from "./keychain.ts";
 import { KindSchema } from "./types.ts";
 
 const BASE_INSTRUCTIONS = [
@@ -28,11 +28,9 @@ const BASE_INSTRUCTIONS = [
 export async function buildInstructions(): Promise<string> {
   try {
     const index = await loadIndex();
-    const entries = Object.entries(index.entries).sort(([a], [b]) =>
-      a.localeCompare(b),
-    );
+    const entries = Object.entries(index.entries).sort(([a], [b]) => a.localeCompare(b));
     if (entries.length === 0) {
-      return BASE_INSTRUCTIONS + "\n\nEnv names at handshake: (no envs stored yet)";
+      return `${BASE_INSTRUCTIONS}\n\nEnv names at handshake: (no envs stored yet)`;
     }
     const lines = ["", "", "Env names at handshake:"];
     for (const [name] of entries) {
@@ -50,10 +48,9 @@ function toolText<T>(payload: T): {
   isError?: boolean;
 } {
   const text = JSON.stringify(payload);
-  const structured =
-    (typeof payload === "object" && payload !== null
-      ? payload
-      : { value: payload }) as T extends object ? T : { value: T };
+  const structured = (
+    typeof payload === "object" && payload !== null ? payload : { value: payload }
+  ) as T extends object ? T : { value: T };
   // isError on the MCP envelope means "tool itself failed" (think: exception).
   // Our Result<T>.ok=false cases are validation/expected outcomes — we surface
   // them via structuredContent.ok=false but DON'T set isError, so clients
@@ -63,10 +60,7 @@ function toolText<T>(payload: T): {
 
 export async function buildServer(): Promise<McpServer> {
   const instructions = await buildInstructions();
-  const server = new McpServer(
-    { name: "mcp-env-keychain", version: "0.2.0" },
-    { instructions },
-  );
+  const server = new McpServer({ name: "mcp-env-keychain", version: "0.2.0" }, { instructions });
 
   server.registerTool(
     "save_env",

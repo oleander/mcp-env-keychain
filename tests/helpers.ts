@@ -2,17 +2,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KeychainBackend } from "../src/keychain.ts";
-import {
-  setKeychainBackend,
-  setIndexPath,
-} from "../src/keychain.ts";
-import { setAuth, resetSession } from "../src/touchid.ts";
+import { setIndexPath, setKeychainBackend } from "../src/keychain.ts";
+import { resetSession, setAuth } from "../src/touchid.ts";
 
 export function makeMemoryKeychain(): KeychainBackend {
   const store = new Map<string, string>();
   return {
     async getPassword(name) {
-      return store.has(name) ? store.get(name)! : null;
+      return store.get(name) ?? null;
     },
     async setPassword(name, value) {
       store.set(name, value);
@@ -28,10 +25,7 @@ export function setupTestEnv(): { indexFile: string } {
   const indexFile = join(dir, "index.json");
   setIndexPath(indexFile);
   setKeychainBackend(makeMemoryKeychain());
-  let authCalls = 0;
-  setAuth(async () => {
-    authCalls += 1;
-  });
+  setAuth(async () => {});
   resetSession();
   return { indexFile };
 }
