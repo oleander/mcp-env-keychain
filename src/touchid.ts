@@ -150,7 +150,7 @@ export async function authenticate(reason: string): Promise<void> {
 export async function ensureUnlocked(secretNames: string[]): Promise<void> {
   if (sessionUnlocked) return;
   const plural = secretNames.length === 1 ? "" : "s";
-  const reason = `unlock ${secretNames.length} k-mcp secret${plural} for this session`;
+  const reason = `unlock ${secretNames.length} mcp-env-keychain secret${plural} for this session`;
   await authFn(reason);
   sessionUnlocked = true;
 }

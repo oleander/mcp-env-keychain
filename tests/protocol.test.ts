@@ -7,7 +7,7 @@ import { setupTestEnv } from "./helpers.ts";
 async function makeClient(): Promise<Client> {
   const server = await buildServer();
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "k-mcp-test", version: "0.0.0" });
+  const client = new Client({ name: "mcp-env-keychain-test", version: "0.0.0" });
   await server.connect(serverTransport);
   await client.connect(clientTransport);
   return client;
@@ -26,7 +26,7 @@ function unwrap(result: unknown): unknown {
   return null;
 }
 
-describe("k-mcp tools (MCP protocol)", () => {
+describe("mcp-env-keychain tools (MCP protocol)", () => {
   beforeEach(() => {
     setupTestEnv();
   });

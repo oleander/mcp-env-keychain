@@ -24,7 +24,7 @@ export function makeMemoryKeychain(): KeychainBackend {
 }
 
 export function setupTestEnv(): { indexFile: string } {
-  const dir = mkdtempSync(join(tmpdir(), "k-mcp-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "mcp-env-keychain-test-"));
   const indexFile = join(dir, "index.json");
   setIndexPath(indexFile);
   setKeychainBackend(makeMemoryKeychain());

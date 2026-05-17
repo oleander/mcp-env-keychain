@@ -9,7 +9,7 @@ import {
 } from "../src/tools.ts";
 import { setupTestEnv } from "./helpers.ts";
 
-describe("k-mcp tools (smoke)", () => {
+describe("mcp-env-keychain tools (smoke)", () => {
   beforeEach(() => {
     setupTestEnv();
   });
