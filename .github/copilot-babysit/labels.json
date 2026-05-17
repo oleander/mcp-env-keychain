@@ -1,37 +1,17 @@
 [
   {
-    "name": "copilot:monitor",
-    "color": "0e8a16",
-    "description": "Babysitter controller is enabled for this PR."
-  },
-  {
     "name": "copilot:paused",
     "color": "fbca04",
-    "description": "Babysitter controller exits without action."
-  },
-  {
-    "name": "copilot:review-pending",
-    "color": "1d76db",
-    "description": "Waiting for Copilot review on the current HEAD."
-  },
-  {
-    "name": "copilot:feedback",
-    "color": "d93f0b",
-    "description": "Current HEAD has actionable review comments to address."
-  },
-  {
-    "name": "copilot:clean",
-    "color": "0e8a16",
-    "description": "Latest Copilot review on the current HEAD reported no comments."
-  },
-  {
-    "name": "copilot:needs-human",
-    "color": "b60205",
-    "description": "Model or deterministic guards found an unsafe/ambiguous state."
+    "description": "Skip the auto-request-review workflow on this PR until removed."
   },
   {
     "name": "copilot:loop-exhausted",
     "color": "5319e7",
-    "description": "Copilot review/fix iteration budget exhausted for the current HEAD."
+    "description": "Lifetime cap of Copilot review requests reached for this PR; PR was parked in draft."
+  },
+  {
+    "name": "copilot:force-review",
+    "color": "d93f0b",
+    "description": "Operator override: bypass the cap and request a Copilot review now (single-shot; auto-removed after firing)."
   }
 ]

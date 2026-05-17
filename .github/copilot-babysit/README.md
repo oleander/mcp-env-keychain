@@ -1,138 +1,89 @@
 # Copilot PR Babysit
 
-Workflow-driven auto-responder that drives a PR through Copilot
-review and fix without any GitHub Models inference in the critical
-path. The babysitter listens for Copilot review comments, posts a
-single `@copilot apply changes based on [link]` reply per comment,
-and relies on Copilot's own custom-instruction-driven behavior to
-fix the issue and resolve the thread.
+A small workflow that auto-requests a Copilot review on every push
+to a non-draft PR, capped at a lifetime maximum per PR. The cap is
+counted from GitHub's timeline (no hidden state), and the workflow
+parks PRs that exceed the cap in draft mode so further pushes do
+not trigger reviews.
 
-The full design lives at
+The full design history lives at
 [`.cursor/plans/copilot-pr-babysit_d407c87b.plan.md`](../../.cursor/plans/copilot-pr-babysit_d407c87b.plan.md).
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  copilotReview["Copilot review submitted (or comment created)"] --> trigger["pull_request_review_comment / pull_request_review event"]
-  trigger --> guard["Guard: copilot:monitor on, copilot:paused off, head SHA matches, iteration cap not reached, no per-comment marker yet"]
-  guard --> respond["Post @copilot apply changes based on [link to comment] as thread reply"]
-  respond --> markComment["Persist HEAD-scoped per-comment marker"]
-  markComment --> bumpState["Bump iteration counter on first comment per Copilot review pass"]
-  bumpState --> copilotFix["Copilot follows instructions: fix + reply + resolve thread"]
-  copilotFix --> push["New commit + push triggers a fresh review cycle"]
-  push --> trigger
+  push["pull_request: opened | reopened | synchronize | ready_for_review | labeled"] --> gate["Skip if draft, copilot:paused, or copilot:loop-exhausted (unless copilot:force-review is set)"]
+  gate --> count["Count review_requested events for Copilot in the PR timeline"]
+  count --> branch{"count < MAX_COPILOT_REVIEWS?"}
+  branch -->|yes| request["gh pr edit --add-reviewer @copilot"]
+  branch -->|no| park["gh pr ready --undo + add copilot:loop-exhausted, comment why"]
+  request --> done["Copilot reviews; instructions tell it to fix + reply + resolve thread"]
+  park --> retry["Operator posts /copilot retry or adds copilot:force-review"]
 ```
 
-GitHub Models is still available behind a feature flag for triage
-when a PR has noisy Copilot comments and the operator wants to
-filter `Style/Pedantic` findings before tagging. The default is
-**off** because the auto-tag flow does not need it.
+The single piece of automation is
+[`/.github/workflows/copilot-request-review.yml`](../workflows/copilot-request-review.yml).
+There is no controller comment, no shared state file, no GitHub
+Models call. The lifetime cap is the loop guard; per-comment
+deduping is unnecessary because Copilot only reviews when explicitly
+requested (the `copilot_code_review` ruleset's auto-review-on-push
+is intentionally disabled — see Prerequisites below).
 
-## Layers
+## Prerequisites
 
-1. **Copilot custom instructions**
-   [`/.github/copilot-instructions.md`](../copilot-instructions.md),
-   [`/.github/instructions/pr-babysit.instructions.md`](../instructions/pr-babysit.instructions.md)
-   (cloud agent),
-   [`/.github/instructions/code-review.instructions.md`](../instructions/code-review.instructions.md)
-   (code review). The cloud-agent instructions tell Copilot to
-   resolve the review thread after applying a fix; that is what
-   makes the auto-tag loop terminate cleanly.
-2. **Auto-responder workflow**
-   [`/.github/workflows/copilot-pr-respond.yml`](../workflows/copilot-pr-respond.yml)
-   tags Copilot once per unresolved review comment on the current
-   HEAD.
-3. **Command workflow**
-   [`/.github/workflows/copilot-pr-command.yml`](../workflows/copilot-pr-command.yml)
-   parses `/copilot ...` slash commands and toggles labels.
-4. **Cron monitor**
-   [`/.github/workflows/copilot-pr-monitor.yml`](../workflows/copilot-pr-monitor.yml)
-   recovers from suppressed Copilot review events.
-5. **Durable state** lives in PR labels, a single hidden controller
-   comment, and HEAD-scoped per-comment markers. See
-   [STATE.md](STATE.md).
+The repository's `copilot_code_review` ruleset rule must have
+`review_on_push: false` (or be removed). Otherwise both this
+workflow and the ruleset will compete to assign Copilot, doubling
+review requests and blowing through the cap.
 
-## Command protocol
+```bash
+gh api repos/<owner>/<repo>/rulesets --jq '.[] | {id, name}'
+gh api repos/<owner>/<repo>/rulesets/<ruleset-id>
+```
 
-Operators drive the controller by labels and slash commands.
+## Labels
 
-### Labels (operator-visible state)
+Only three labels exist; the workflow manages two of them and the
+operator owns the third.
 
-| Label | Meaning |
-|-------|---------|
-| `copilot:monitor` | Auto-responder is enabled for this PR. |
-| `copilot:paused` | Auto-responder exits without action. |
-| `copilot:review-pending` | Waiting for Copilot review on current HEAD. |
-| `copilot:feedback` | Current HEAD has actionable review comments. |
-| `copilot:clean` | Latest Copilot review on current HEAD has no comments. |
-| `copilot:needs-human` | Guards detected an unsafe/ambiguous state. |
-| `copilot:loop-exhausted` | Iteration budget reached for current HEAD. |
+| Label | Owned by | Meaning |
+|-------|----------|---------|
+| `copilot:paused` | operator | Skip the workflow on this PR. |
+| `copilot:loop-exhausted` | workflow | Cap reached; PR is parked in draft. The workflow auto-applies/removes this. |
+| `copilot:force-review` | operator | Single-shot override: ignore the cap and request a review now. The workflow removes the label after firing. |
 
-### Slash commands (PR comments)
+`labels.json` is the manifest used to bootstrap them; run the
+workflow's bootstrap step (or `gh label create` manually) once per
+repo.
 
-| Command | Effect |
-|---------|--------|
-| `/copilot babysit` | Add `copilot:monitor`, allow auto-responder to run. |
-| `/copilot pause` | Add `copilot:paused`, auto-responder exits next event. |
-| `/copilot resume` | Remove `copilot:paused`. |
-| `/copilot stop` | Remove `copilot:monitor` and add `copilot:paused`. |
-| `/copilot status` | Post a status comment with current counters. |
-| `/copilot retry` | Reset HEAD-scoped iteration counter for the current HEAD. Does not change `headSha`. |
+## Operator commands
 
-The literal `@copilot` mention is reserved for actually invoking
-Copilot. The auto-responder posts `@copilot apply changes based on
-[this feedback](URL)` as a thread reply; it never posts `@copilot
-review` to ask for a review.
+The workflow takes no slash commands directly. The semantics below
+are how operators interact with it via labels:
 
-## Triggers
+| Intent | Action |
+|--------|--------|
+| Pause the workflow on a PR | Add `copilot:paused`. |
+| Resume the workflow | Remove `copilot:paused`. |
+| Force a review past the cap | Add `copilot:force-review`. The workflow requests the review and auto-removes the label. |
+| Reset cap and try again | Remove `copilot:loop-exhausted` and mark the PR ready (or add `copilot:force-review`). The lifetime counter still reflects history; the cap will trip again. |
 
-| Trigger | Purpose |
-|---------|---------|
-| `pull_request_review_comment.created` | Primary: Copilot just left a review comment. |
-| `pull_request_review.submitted` | Primary: bump iteration count when Copilot completes a review. |
-| `pull_request: opened, reopened, synchronize, ready_for_review, converted_to_draft, labeled, unlabeled` | State sync on push and operator label edits. |
-| `issue_comment.created` | Slash commands. |
-| `schedule: cron */30` | Recovery for suppressed Copilot events. |
-| `workflow_dispatch` | Manual invocation. |
+## Loop budget
 
-`pull_request_review_comment` and `pull_request_review` are the fast
-path; the cron monitor in `copilot-pr-monitor.yml` is the safety net
-because Copilot bot events can be silently suppressed by GitHub.
+| Setting | Default | Source |
+|---------|---------|--------|
+| `MAX_COPILOT_REVIEWS` | `5` | `env` block in [the workflow](../workflows/copilot-request-review.yml). |
 
-## Loop budgets and cooldowns
-
-| Budget | Default | Notes |
-|--------|---------|-------|
-| Max Copilot review/fix cycles per HEAD | 3 | Resets on push (HEAD change); `/copilot retry` resets without changing HEAD. |
-| Iteration severity threshold | 1: 2+, 2: 3+, 3+: 4+ | Only used when triage is enabled. |
-| Per-comment cooldown | One reply per `<HEAD,reviewCommentId>` pair | Enforced by HEAD-scoped marker. |
-| Active local marker TTL | 30m | Workflow yields while the marker is fresh. |
-
-## Optional triage
-
-When `BABYSIT_TRIAGE` is set to `on` (workflow env or repo
-variable), the auto-responder calls GitHub Models with the triage
-prompt before tagging. Comments classified as
-`recommendation: "Address"` with `severity >= iterationThreshold`
-get tagged; the rest get a brief reply explaining why they were
-deferred and the thread is left unresolved for human triage.
-
-The default is **off** because the simpler auto-tag flow already
-works and avoids a model call on every event.
+The cap counts every prior `review_requested` timeline event whose
+`requested_reviewer.login` is `Copilot`. There is no per-HEAD
+counter; once a PR has had five Copilot reviews it is parked, and
+the operator chooses whether to keep going.
 
 ## Files in this directory
 
-- [`labels.json`](labels.json) — manifest the bootstrap workflow
-  uses to ensure labels exist with the right colors and
-  descriptions.
-- [`STATE.md`](STATE.md) — schema and lifecycle of the hidden state
-  comment and HEAD-scoped suppression markers.
-- [`prompt-triage.md`](prompt-triage.md) — system prompt for the
-  optional Copilot-comment triage step.
-- [`schema-state.json`](schema-state.json) and
-  [`schema-triage.json`](schema-triage.json) — JSON Schema
-  validators used by the shell guard.
-- [`scripts/`](scripts) — bash helpers used by the workflows.
-- [`RALPH-EVAL.md`](RALPH-EVAL.md) — explanation of why we did not
-  ship a Ralph Wiggum-style local shell loop in this repository.
+- [`labels.json`](labels.json) — manifest of the three labels the
+  workflow manages.
+- [`SPIKE.md`](SPIKE.md) — verification runbook.
+- [`CI-GATES.md`](CI-GATES.md) — why no slow-CI label gating was
+  added.

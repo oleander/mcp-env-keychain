@@ -1,133 +1,90 @@
 # Babysitter spike — verification runbook
 
-The plan calls for a small spike on a real PR to confirm which
-review-request paths actually wake Copilot with the
-`GITHUB_TOKEN` available in workflows. This file is the manual
-runbook to follow once the workflow files are dropped in.
+A manual runbook to confirm the simple babysitter does the right
+thing on a real PR. Run through this once after the workflow lands,
+and re-run only when you change `copilot-request-review.yml` or
+adjust `MAX_COPILOT_REVIEWS`.
 
 ## Prerequisites
 
-- The four workflow files described in
-  [`README.md`](README.md) are present in
-  [`/.github/workflows/`](../workflows/).
-- The bootstrap workflow has run once successfully (creates
-  the `copilot:*` labels).
-- This repository has Copilot Pro/Pro+/Business/Enterprise so
-  Copilot review is even available; see
-  https://docs.github.com/en/copilot/concepts/agents/cloud-agent/access-management.
+- [`copilot-request-review.yml`](../workflows/copilot-request-review.yml)
+  is on the default branch.
+- The `copilot:*` labels exist (use `gh label create` per
+  [README.md](README.md)).
+- The repository's `copilot_code_review` ruleset rule has
+  `review_on_push: false` (or the rule is removed). Otherwise the
+  ruleset and the workflow will race.
+- You have Copilot access for this org/repo
+  ([access management](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/access-management)).
 
-## Spike 1 — slash command happy path
+## Spike 1 — cap-respecting auto-request
 
-1. Create a throwaway branch: `git checkout -b babysit-spike-1` and
-   commit a deliberate small change (e.g. add a TODO comment to
-   `src/types.ts`). Push and open a PR.
-2. Comment `/copilot babysit` on the PR.
+1. `git checkout -b babysit-spike-1`, commit a small change, push,
+   open a PR.
+2. **Expect:** the `Copilot Request Review` workflow runs, finds
+   `count == 0 < MAX_COPILOT_REVIEWS`, and calls
+   `gh pr edit <N> --add-reviewer @copilot`.
+3. **Verify:**
+   - A `Running Copilot Code Review` dynamic check appears.
+   - The timeline has one new `review_requested` event with
+     `requested_reviewer.login == "Copilot"`.
+   - The workflow step summary shows `count=1`, `cap=5`.
+4. Push four more commits. After each, repeat step 2/3 with the
+   counter bumping by one.
+5. Push a sixth commit. **Expect:**
+   - The workflow refuses to call `gh pr edit --add-reviewer`.
+   - The PR is converted back to draft (`isDraft: true`).
+   - The `copilot:loop-exhausted` label is applied.
+   - A PR comment from `github-actions[bot]` explains the cap.
+
+## Spike 2 — paused PR
+
+1. Add the `copilot:paused` label to the PR.
+2. Push another commit.
+3. **Expect:** the workflow runs, the `Skip when paused` step is
+   visible in the run logs, and no `review_requested` event lands.
+4. Remove the `copilot:paused` label.
+5. Push another commit.
+6. **Expect:** the workflow runs the cap-checked path again.
+
+## Spike 3 — force-review escape hatch
+
+1. With the PR in `copilot:loop-exhausted` state (from spike 1):
+2. Add the `copilot:force-review` label.
 3. **Expect:**
-   - The `copilot:monitor` label appears within ~30s.
-   - No state comment is posted yet (no Copilot review on HEAD).
-4. Comment `/copilot pause`.
-5. **Expect:** `copilot:paused` label appears.
-6. Comment `/copilot resume`. The label disappears.
-7. Comment `/copilot stop`. `copilot:monitor` is removed,
-   `copilot:paused` is added.
+   - The workflow's `preflight` job sets `force=true`.
+   - The PR is marked ready if it was in draft.
+   - `gh pr edit --add-reviewer @copilot` succeeds.
+   - The workflow removes both `copilot:force-review` and
+     `copilot:loop-exhausted`.
+   - One new `review_requested` event appears.
+4. Note: the lifetime counter has now passed the cap, so the next
+   push will park the PR again unless the operator force-reviews
+   again or raises `MAX_COPILOT_REVIEWS`.
 
-If steps 3–7 work, the slash-command workflow is correctly wired.
+## Spike 4 — token paths
 
-## Spike 2 — Copilot review request
+`gh pr edit --add-reviewer @copilot` requires gh CLI v2.88.0+. The
+runner image used by `ubuntu-latest` ships a recent enough gh as of
+this writing, but if a runner regresses, the workflow falls back to
+the REST endpoint
+`POST /repos/{owner}/{repo}/pulls/{pr}/requested_reviewers` with
+`reviewers[]=copilot-pull-request-reviewer[bot]`.
 
-Re-enable monitoring on the spike PR (`/copilot babysit`) and
-request a Copilot review through one of the paths below. Each
-should be tried separately, on a fresh PR, to identify which one
-actually wakes Copilot under your token policy.
+In a test PR, force the REST path by setting `GH_VERSION_OLD=1`
+(no such logic is wired; instead temporarily remove the gh-CLI step
+from the workflow) and confirm:
 
-| Path | Command | Notes |
-|------|---------|-------|
-| A | UI: `Reviewers → Request review → Copilot` | Establishes a baseline; confirms Copilot is reachable for this org/repo. |
-| B | `gh pr edit <PR> --add-reviewer copilot` | Same effect as A, scriptable. |
-| C | GraphQL `requestReviews` with `botIds: [BOT_kgDOCnlnWA]` via `GITHUB_TOKEN` | Per the `future-architect/uzomuzo-oss` writeup, this can silently no-op under `GITHUB_TOKEN`. Confirm whether your repo is affected. |
-| D | GraphQL `requestReviews` via a maintainer PAT (e.g. `secrets.GH_ACTIONS_TOKEN`) | Use only if C silently no-ops. |
-| E | `gh extension install ChrisCarini/gh-copilot-review` then `gh copilot-review <PR>` | Wraps A/B; useful if you keep the extension on the runner image. |
+- The REST call returns HTTP 201.
+- A `review_requested` timeline event appears with
+  `requested_reviewer.login == "Copilot"`.
 
-Record which paths produce a Copilot review with all of these:
-
-- A `Running Copilot Code Review` dynamic check appears.
-- A `pull_request_review.submitted` event from
-  `copilot-pull-request-reviewer[bot]` (or `Copilot`) lands.
-- One or more `pull_request_review_comment.created` events fire
-  for each inline comment.
-
-Document the winner in
-[`README.md`](README.md) and update
-`scripts/respond.sh` if a different fallback order is needed.
-
-## Spike 3 — Auto-respond fast path
-
-With monitoring enabled and Copilot leaving at least one review
-comment on the PR:
-
-1. Confirm the workflow run from
-   `pull_request_review_comment.created` fires.
-2. **Expect:** the workflow posts an `@copilot apply changes
-   based on [this feedback](URL)` thread reply on each unresolved
-   Copilot comment, and the body of that reply ends with the
-   marker:
-
-   ```
-   <!-- copilot-fix-trigger:<HEAD>:<commentDatabaseId> -->
-   ```
-
-3. Re-trigger the workflow (e.g. comment `/copilot retry`). The
-   workflow should detect the existing markers and post **zero**
-   new replies for the same `(HEAD, commentId)` pairs.
-4. Push a new commit to the PR. The workflow runs again, the
-   `iteration` counter resets in the state comment, and any new
-   Copilot review comments on the new HEAD get tagged.
-5. After the third Copilot review iteration on the same HEAD, the
-   workflow stops tagging and adds `copilot:loop-exhausted`.
-
-## Spike 4 — Copilot resolves the thread
-
-The cloud-agent instructions tell Copilot to reply + resolve the
-thread after applying a fix. Confirm:
-
-1. After the auto-respond reply lands, Copilot opens a new PR /
-   pushes commits to address the comment.
-2. Copilot posts an in-thread reply with the fix description and
-   commit SHA.
-3. The thread is marked `isResolved: true` in:
-
-   ```bash
-   gh api graphql -f query='
-   query($o:String!,$r:String!,$n:Int!){
-     repository(owner:$o,name:$r){
-       pullRequest(number:$n){
-         reviewThreads(first:100){
-           nodes { id isResolved isOutdated comments(first:1){nodes{author{login}}} }
-         }
-       }
-     }
-   }' -f o=oleander -f r=mcp-env-keychain -F n=<PR>
-   ```
-
-If Copilot does not resolve the thread automatically despite the
-instructions, refine
-[`pr-babysit.instructions.md`](../instructions/pr-babysit.instructions.md)
-based on the observed behavior — the auto-tag flow assumes Copilot
-honors the resolve step.
-
-## Spike 5 — Auto-merge gates
-
-With the PR clean (no unresolved threads, CI green, no Copilot
-pending), confirm the babysitter does NOT auto-merge. The current
-implementation does not call `gh pr merge --auto` from the
-auto-responder by design — operators enable auto-merge themselves
-once Copilot has converged. Document any change to that policy
-before adding it back.
+If the REST call fails for a reason other than rate-limiting, you
+likely need a PAT instead of `GITHUB_TOKEN`. See
+[future-architect/uzomuzo-oss](https://github.com/future-architect/uzomuzo-oss/blob/main/.github/workflows/copilot-rereview-on-push.yml)
+for the silent-no-op recovery pattern.
 
 ## Cleanup
 
-Once the spike PR has driven the system through the four scenarios
-above, close it, delete the branch, and remove the spike-induced
-labels. Capture any surprises in
-[`README.md`](README.md) under "Known limitations" and adjust
-budgets/cooldowns in `lib.sh` if needed.
+Close the spike PR, delete the branch, and capture any surprises
+back in [README.md](README.md) under "Known limitations".

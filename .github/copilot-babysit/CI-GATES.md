@@ -36,15 +36,15 @@ defer until review feedback is clear.
   - A long-running job (real-device tests, package publish dry-runs,
     integration with a live macOS Keychain harness, signed binary
     builds) lands in CI.
-  - The babysitter starts producing more than ~3 review-fix
-    iterations per HEAD on average. The 3-iteration cap should
-    bound this, but if the cap is raised, slow-CI gating becomes
-    relevant again.
+  - The babysitter starts producing more than ~5 review-fix
+    iterations per PR on average. `MAX_COPILOT_REVIEWS` (default
+    5) should bound this; if the cap is raised, slow-CI gating
+    becomes relevant again.
 
-## What we kept
+## What bounds CI churn instead
 
-The babysitter's iteration cap (3 cycles per HEAD) and per-comment
-deduplication marker already prevent the worst kind of CI churn:
-multiple `@copilot apply changes` prompts firing for the same
-comment on the same HEAD. The cap reduces the upper bound on per-PR
-runner cost without needing a label gate.
+The babysitter's `MAX_COPILOT_REVIEWS` cap (5 lifetime Copilot
+requests per PR) bounds the worst-case CI cost: a PR cannot trigger
+more than ~5 review-fix cycles before the workflow parks it in
+draft. Each cycle is at most one push, so CI runs at most 5x for
+review-driven churn before an operator must intervene.

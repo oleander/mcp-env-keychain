@@ -9,12 +9,13 @@ These rules apply to GitHub Copilot when it is acting as a cloud agent
 on this repository. Copilot code review uses
 [`code-review.instructions.md`](code-review.instructions.md) instead.
 
-## Auto-tag fix protocol
+## Fix-on-mention protocol
 
-When you receive a comment that begins with `@copilot apply changes
-based on [this feedback](URL)`, treat it as an auto-generated fix
-request from the babysitter. The URL points to a specific review
-thread on this PR. Follow this protocol:
+When a maintainer (or the GitHub UI's "Fix with Copilot" button)
+tags you with a comment that points at a specific review thread on
+this PR, follow this protocol. The most common shape is
+`@copilot apply changes based on [this feedback](URL)`, but the
+rules below apply to any per-thread fix request.
 
 1. **Open the linked review thread** and read every comment in it.
 2. **Apply the smallest viable fix** that resolves the concern.
@@ -63,25 +64,34 @@ without changing code. Do not silently leave it unresolved.
 
 ## Copilot review iteration policy
 
-Cap at three iterations per HEAD. The babysitter workflow tracks the
-counter in a hidden state comment keyed by `headSha`.
+The babysitter caps Copilot review requests at
+`MAX_COPILOT_REVIEWS=5` lifetime requests per PR
+(see [`.github/workflows/copilot-request-review.yml`](../workflows/copilot-request-review.yml)).
+The count comes from the timeline (`review_requested` events with
+`requested_reviewer.login == "Copilot"`); there is no separate
+hidden state to read.
 
-| Iteration | Address with code/doc changes | Resolve without addressing |
-|-----------|------------------------------|---------------------------|
-| 1 | Address valid high, medium, and low | Only invalid/out-of-scope/already-fixed |
-| 2 | Address valid high and medium | Reply-resolve low with the iteration note |
-| 3+ | Address valid high | Reply-resolve medium and low with the iteration note |
+When you respond to Copilot feedback, escalate severity discipline
+across the lifetime of the PR:
 
-When resolving without addressing, reply in-thread first stating which
-iteration this is and why the issue is being deferred. Example reply:
+| Cycle (1-based) | Address with code/doc changes | Resolve without addressing |
+|-----------------|-------------------------------|---------------------------|
+| 1-2 | Valid high, medium, and low | Only invalid/out-of-scope/already-fixed |
+| 3   | Valid high and medium | Reply-resolve low with a note |
+| 4-5 | Valid high only | Reply-resolve medium and low with a note |
 
-> Copilot iteration 2: resolving without code changes because this is
-> low-priority feedback and the PR is now only accepting medium/high
-> fixes.
+When resolving without addressing, reply in-thread first stating
+why the issue is being deferred, e.g.:
 
-After the third completed Copilot pass, do not wait for or solicit
-more Copilot feedback to clear medium/low suggestions. Address valid
-high-severity findings only and reply-resolve the rest.
+> Cycle 4 of the babysitter cap: resolving without code changes
+> because this is low-priority feedback; the PR is now only
+> accepting high-severity fixes before merge.
+
+After cycle 5, the workflow stops auto-requesting Copilot and parks
+the PR in draft with the `copilot:loop-exhausted` label. Do not
+mark the PR ready while that label is set; an operator must add
+`copilot:force-review` (one-shot) or raise `MAX_COPILOT_REVIEWS`
+before further Copilot review.
 
 ## State-gathering recipe (run first, in parallel)
 
@@ -187,7 +197,10 @@ Run this in order:
 10. Reply to every addressed and rejected thread, then resolve it.
 11. Wait for fast CI on the fix push.
 12. Mark ready again.
-13. Loop steps 7-12 only within the 3-iteration cap.
+13. Loop steps 7-12 within the `MAX_COPILOT_REVIEWS=5` lifetime cap.
+    When the workflow parks the PR in draft and labels it
+    `copilot:loop-exhausted`, do not auto-restart — wait for an
+    operator to add `copilot:force-review` or raise the cap.
 14. Wait for the post-`ready_for_review` full pipeline (draft-era runs
     keep some required jobs `SKIPPED`).
 15. Confirm Copilot is not pending for the current head commit.
