@@ -1,3 +1,13 @@
+# Copilot Request Review Workflow
+#
+# Purpose:
+# Automatically requests a review from the Copilot code-review agent (`copilot-pull-request-reviewer[bot]`)
+# whenever a code review is submitted on a pull request. To prevent infinite review loops between the
+# cloud-agent and code-review-agent, the workflow counts prior Copilot review requests and enforces a
+# configurable maximum (MAX_COPILOT_REVIEWS, default: 5).
+#
+# A Personal Access Token (PAT) with `Pull requests: write` permissions is preferred, as the GitHub
+# Actions default token cannot request reviews from GitHub Apps.
 name: Copilot Request Review
 
 on:
@@ -17,18 +27,26 @@ env:
   MAX_COPILOT_REVIEWS: "5"
 
 jobs:
-  request:
+  request-review:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      # Prefer a PAT with `Pull requests: write` over the default
-      # GITHUB_TOKEN: the latter cannot request reviews from GitHub
-      # Apps (Copilot is `copilot-pull-request-reviewer[bot]`) and
-      # the API returns success without performing the mutation.
       GH_TOKEN: ${{ secrets.COPILOT_REQUEST_PAT || github.token }}
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+
     steps:
+      - name: Ensure required tools
+        run: |
+          if ! command -v gh >/dev/null; then
+            echo "::error::GitHub CLI (gh) is not installed!"
+            exit 1
+          fi
+          if ! command -v jq >/dev/null; then
+            echo "::error::jq is not installed!"
+            exit 1
+          fi
+
       - name: Count prior Copilot review requests
         id: count
         run: |
@@ -37,28 +55,39 @@ jobs:
               add // []
               | [.[] | select(
                   .event == "review_requested"
-                  and (.requested_reviewer.login // "") == "Copilot"
+                  and (.requested_reviewer.login // "" | ascii_downcase) == "copilot"
                 )]
               | length
             ')
           echo "count=$count" >> "$GITHUB_OUTPUT"
           echo "Copilot has been requested $count time(s) (max: $MAX_COPILOT_REVIEWS)"
 
-      - name: Request Copilot Review
+      - name: Request Copilot review if under limit
         if: fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
           set -euo pipefail
+
+          echo "Requesting review from copilot-pull-request-reviewer[bot]..."
+
           gh api --method POST \
             "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
             -f "reviewers[]=copilot-pull-request-reviewer[bot]" \
             >/dev/null
 
-          # The POST may silently no-op under GITHUB_TOKEN (one App
-          # cannot request reviews from another), so verify post-state.
-          current=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
+          # Verify if Copilot review is actually pending
+          pending=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
             --jq '[.users[].login] | join(",")')
-          echo "Pending reviewers after request: ${current:-<none>}"
-          if ! echo ",${current}," | grep -q ",Copilot,"; then
-            echo "::error::Copilot was not added to the PR. Set the COPILOT_REQUEST_PAT secret to a PAT with 'Pull requests: write' on this repo — the default GITHUB_TOKEN cannot request reviews from GitHub Apps."
+          echo "Pending reviewers after request: ${pending:-<none>}"
+
+          if ! echo ",${pending}," | grep -iq ",copilot,"; then
+            echo "::error::Copilot was not added as a PR reviewer."
+            echo "TIP: Set the COPILOT_REQUEST_PAT secret to a PAT with 'Pull requests: write' in your repository, as the Actions default GITHUB_TOKEN cannot request reviews from GitHub Apps."
             exit 1
+          else
+            echo "✅ Copilot review requested successfully."
           fi
+
+      - name: Post info if Copilot review limit is reached
+        if: fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_COPILOT_REVIEWS)
+        run: |
+          echo "Copilot review request limit ($MAX_COPILOT_REVIEWS) reached. No further reviews will be requested automatically."
