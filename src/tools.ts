@@ -152,7 +152,7 @@ export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
     kind = resolved;
   }
 
-  await keychain().setPassword(name, args.value);
+  await keychain().setPassword(name, args.value, kind);
 
   const index = await loadIndex();
   const existing = index.entries[name];
