@@ -1,4 +1,5 @@
 import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
+import { execCommand } from "./exec.ts";
 import {
   keychain,
   loadIndex,
@@ -309,71 +310,45 @@ export async function runWithSecrets(args: {
   }
   for (const [k, v] of Object.entries(injected)) env[k] = v;
 
-  let proc: ReturnType<typeof Bun.spawn>;
-  try {
-    proc = Bun.spawn(["bash", "-lc", command], {
-      env,
-      stdout: "pipe",
-      stderr: "pipe",
-      stdin: "ignore",
-      ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
-    });
-  } catch (e) {
-    // Spawn errors describe the failure (e.g. ENOENT for a bad cwd) and never
-    // contain env values.
-    const msg = e instanceof Error ? e.message : String(e);
-    return {
-      ok: false,
-      error: `failed to spawn subprocess: ${msg}`,
-      injected_keys: keys,
-    };
+  const CAP = 1 << 20; // 1 MiB per stream; matches exec.ts DEFAULT_MAX_BYTES.
+  const result = await execCommand({
+    command,
+    env,
+    ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+    timeoutMs: timeout * 1000,
+    maxBytesPerStream: CAP,
+  });
+
+  if (result.kind === "spawn_failed") {
+    return { ok: false, error: result.error, injected_keys: keys };
   }
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    // SIGKILL so the subprocess goes away immediately. Plain SIGTERM lets
-    // `bash -lc 'cmd; sleep N'` wait for `sleep` to finish before exiting,
-    // which on slow CI runners pushes the test past bun:test's per-test
-    // timeout even when our own logical timeout fired at the right moment.
-    proc.kill("SIGKILL");
-  }, timeout * 1000);
+  const stdout = scrub(result.stdout, secretsOnly);
+  const stderr = scrub(result.stderr, secretsOnly);
+  const mark = (s: string, t: boolean): string =>
+    t ? `${s}\n[output truncated at ${CAP} bytes]` : s;
 
-  let stdoutText = "";
-  let stderrText = "";
-  let exitCode = -1;
-  try {
-    const stdoutStream = proc.stdout as ReadableStream<Uint8Array>;
-    const stderrStream = proc.stderr as ReadableStream<Uint8Array>;
-    const [stdout, stderr, exited] = await Promise.all([
-      new Response(stdoutStream).text(),
-      new Response(stderrStream).text(),
-      proc.exited,
-    ]);
-    stdoutText = stdout;
-    stderrText = stderr;
-    exitCode = exited;
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (timedOut) {
-    // Preserve whatever the subprocess produced before being killed —
-    // that's exactly the output users need to debug a timeout.
+  if (result.kind === "timeout") {
     return {
       ok: false,
       error: `command exceeded timeout of ${timeout}s`,
       injected_keys: keys,
-      stdout: scrub(stdoutText, secretsOnly),
-      stderr: scrub(stderrText, secretsOnly),
+      stdout: mark(stdout, result.truncatedStdout),
+      stderr: mark(stderr, result.truncatedStderr),
+      timed_out: true,
+      signal: result.signal,
+      ...(result.truncatedStdout ? { truncated_stdout: true as const } : {}),
+      ...(result.truncatedStderr ? { truncated_stderr: true as const } : {}),
     };
   }
 
   return {
     ok: true,
-    exit_code: exitCode,
-    stdout: scrub(stdoutText, secretsOnly),
-    stderr: scrub(stderrText, secretsOnly),
+    exit_code: result.exitCode,
+    stdout: mark(stdout, result.truncatedStdout),
+    stderr: mark(stderr, result.truncatedStderr),
     injected_keys: keys,
+    ...(result.truncatedStdout ? { truncated_stdout: true as const } : {}),
+    ...(result.truncatedStderr ? { truncated_stderr: true as const } : {}),
   };
 }

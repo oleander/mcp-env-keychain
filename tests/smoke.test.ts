@@ -120,6 +120,72 @@ describe("mcp-env-keychain tools (smoke)", () => {
     expect((await deleteEnv("STRIPE_API_KEY")).ok).toBe(true);
     expect((await listEnvs()).count).toBe(0);
   });
+
+  test("run_with_secrets surfaces timed_out flag and signal on timeout", async () => {
+    const r = await runWithSecrets({ command: "sleep 5", env_keys: [], timeout: 1 });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.timed_out).toBe(true);
+    // `sleep` dies on SIGTERM immediately, so no escalation is expected.
+    expect(r.signal).toBe("SIGTERM");
+  });
+
+  test("run_with_secrets classifies a missing cwd cleanly", async () => {
+    const r = await runWithSecrets({
+      command: "echo hi",
+      env_keys: [],
+      cwd: `/definitely/not/here/${Math.random()}`,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("cwd does not exist");
+    expect(r.error).not.toContain("ENOENT");
+  });
+
+  test("run_with_secrets flags truncated stdout and appends a marker", async () => {
+    // 5 MiB of output blows past the 1 MiB cap. We don't want to depend on
+    // bun:test's per-test timeout, so use `head -c` to bound the producer.
+    const r = await runWithSecrets({
+      command: "yes a | head -c $((5 * 1024 * 1024))",
+      env_keys: [],
+      timeout: 10,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.truncated_stdout).toBe(true);
+    expect(r.stdout).toContain("[output truncated at 1048576 bytes]");
+  });
+
+  test("scrub catches the URL-encoded variant of a secret", async () => {
+    // Picking a value with a percent-encodable char so the percent-encoded
+    // transform actually differs from the raw value.
+    const SECRET = "sk_live_a/b/c/abcdef";
+    await saveEnv({ name: "URLY", value: SECRET, kind: "secret" });
+    const r = await runWithSecrets({
+      command: 'printf "%s" "$URLY" | jq -sRr @uri',
+      env_keys: ["URLY"],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.stdout).not.toContain("sk_live_a%2Fb");
+    expect(r.stdout).toContain("[REDACTED:URLY]");
+  });
+
+  test("scrub catches the JSON-escaped variant of a secret containing a quote", async () => {
+    const SECRET = 'value_with_"quote"_inside_xx';
+    await saveEnv({ name: "JSONY", value: SECRET, kind: "secret" });
+    const r = await runWithSecrets({
+      command: "jq -n --arg t \"$JSONY\" '{t:$t}'",
+      env_keys: ["JSONY"],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // The raw value isn't in the output (jq escapes it).
+    expect(r.stdout).not.toContain(SECRET);
+    // Neither is the JSON-escaped form.
+    expect(r.stdout).not.toContain('value_with_\\"quote\\"_inside_xx');
+    expect(r.stdout).toContain("[REDACTED:JSONY]");
+  });
 });
 
 describe("index reliability (B2, B3, B4)", () => {

@@ -33,6 +33,9 @@ export type RunOk = Ok<{
   stdout: string;
   stderr: string;
   injected_keys: string[];
+  // Only present when true: stdout/stderr was capped to 1 MiB.
+  truncated_stdout?: boolean;
+  truncated_stderr?: boolean;
 }>;
 // RunErr can carry partial output on timeout — what the subprocess printed
 // before being killed is exactly what the user needs to debug.
@@ -40,6 +43,11 @@ export type RunErr = Err & {
   injected_keys?: string[];
   stdout?: string;
   stderr?: string;
+  truncated_stdout?: boolean;
+  truncated_stderr?: boolean;
+  // Only present on the timeout branch.
+  timed_out?: boolean;
+  signal?: "SIGTERM" | "SIGKILL";
 };
 export type RunResult = RunOk | RunErr;
 
@@ -97,6 +105,10 @@ export const RunWithSecretsOutput = z.object({
   stderr: z.string().optional(),
   injected_keys: z.array(z.string()).optional(),
   error: z.string().optional(),
+  truncated_stdout: z.boolean().optional(),
+  truncated_stderr: z.boolean().optional(),
+  timed_out: z.boolean().optional(),
+  signal: z.string().optional(),
 });
 
 // ---- Persisted index schema ----

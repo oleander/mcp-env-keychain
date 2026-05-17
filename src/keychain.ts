@@ -11,6 +11,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { makeSensitiveBank } from "@zapier/secret-scrubber/lib/utils.js";
 import { resolveIndexPath, SECRET_HINT_TOKENS, SERVICE } from "./constants.ts";
 import { type Index, IndexSchema } from "./types.ts";
 
@@ -326,11 +327,29 @@ export function looksSecret(name: string): boolean {
   return SECRET_HINT_TOKENS.some((tok) => up.includes(tok));
 }
 
+// Defense-in-depth scrub. Replaces secret values — and common encoded
+// variants of them — with [REDACTED:NAME] markers. The transform list comes
+// from @zapier/secret-scrubber's makeSensitiveBank (percent-encoding,
+// percent+plus, JSON-string-escape, base64), so values that leak through
+// curl --data-urlencode, jq --arg, etc. still get caught.
+//
+// Two floors:
+//   - value.length < 4  → skipped entirely (matches the historical behavior;
+//     1-3 char values would just noise up unrelated output).
+//   - value.length < 6  → literal scrub only. The scrubber package enforces
+//     its own 6-char floor on transforms, so for 4-5 char values we fall
+//     back to plain split/join with our 4-char floor.
 export function scrub(text: string, secrets: Record<string, string>): string {
   let out = text;
   for (const [name, value] of Object.entries(secrets)) {
-    if (value.length >= 4) {
-      out = out.split(value).join(`[REDACTED:${name}]`);
+    if (value.length < 4) continue;
+    const variants = value.length >= 6 ? Object.keys(makeSensitiveBank([value])) : [value];
+    // Longest first so a shorter prefix-variant can't chew the inside of a
+    // longer overlapping variant before it has a chance to match.
+    variants.sort((a, b) => b.length - a.length);
+    const marker = `[REDACTED:${name}]`;
+    for (const v of variants) {
+      out = out.split(v).join(marker);
     }
   }
   return out;
