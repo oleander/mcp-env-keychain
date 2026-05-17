@@ -1,0 +1,7 @@
+[install]
+exact = true
+
+[test]
+# Touch ID prompt + Swift JIT cold-start can take >5s on first invocation;
+# bump from default 5000ms.
+timeout = 10000
