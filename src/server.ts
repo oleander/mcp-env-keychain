@@ -78,13 +78,15 @@ export async function buildServer(): Promise<McpServer> {
   );
 
   // Wire the index-change notifier so clients refresh their resource list
-  // after save_env / delete_env.
+  // after save_env / delete_env. `sendResourceListChanged` is async, so we
+  // attach a .catch to the returned promise — a sync try/catch would only
+  // catch synchronous throws and leak transport-failure rejections.
   setOnIndexChange(() => {
-    try {
-      server.sendResourceListChanged();
-    } catch {
-      // Server not yet connected to a transport — fine, this is fire-and-forget.
-    }
+    void Promise.resolve(server.sendResourceListChanged()).catch((e) => {
+      // Server not yet connected to a transport, or transport disconnected
+      // mid-call — fire-and-forget, surface to stderr only.
+      console.error("mcp-env-keychain: sendResourceListChanged failed:", e);
+    });
   });
 
   // Wire the elicitation seam to the underlying server's elicitInput. Tools
@@ -218,8 +220,17 @@ export async function buildServer(): Promise<McpServer> {
     async (uri, variables) => {
       const raw = variables.name;
       const name = Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "");
-      const decoded = decodeURIComponent(name);
-      const result = await getEnvMetadata(decoded);
+      // Defensive decode: percent-decode the template variable when possible,
+      // but fall back to the raw value rather than failing the request when
+      // the URI contains malformed escapes like `keychain://env/100%_SAFE`.
+      let lookup = name;
+      try {
+        lookup = decodeURIComponent(name);
+      } catch {
+        // Malformed percent-encoding — use the literal segment so the lookup
+        // returns a normal `ok: false` instead of a transport-level error.
+      }
+      const result = await getEnvMetadata(lookup);
       return {
         contents: [
           {
