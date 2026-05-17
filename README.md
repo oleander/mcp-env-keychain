@@ -1,6 +1,6 @@
 # mcp-env-keychain
 
-MCP server for macOS that stores environment-variable values in the Keychain and lets an LLM use them safely.
+MCP server for macOS that stores environment-variable values in the Keychain and lets an LLM use them safely. Values never leak into chat transcripts.
 
 ## Security model
 
