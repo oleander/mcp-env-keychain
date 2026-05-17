@@ -1,8 +1,13 @@
+import type {
+  ElicitRequestFormParams,
+  ElicitResult,
+} from "@modelcontextprotocol/sdk/types.js";
 import {
   keychain,
   loadIndex,
   saveIndex,
   looksSecret,
+  normalizeName,
   now,
   scrub,
 } from "./keychain.ts";
@@ -10,14 +15,50 @@ import { ensureUnlocked, TouchIDAuthFailed, TouchIDNotAvailable } from "./touchi
 import type {
   Catalog,
   DeleteEnvResult,
+  EnvMetadata,
   Entry,
   FindEnvsResult,
   GetPlainResult,
+  Kind,
   ListEnvsResult,
+  Result,
   RunResult,
   SaveEnvArgs,
   SaveEnvResult,
 } from "./types.ts";
+
+// ---- Index-changed notifier seam ----
+//
+// server.ts wires this to `mcpServer.sendResourceListChanged()` so clients
+// refresh their resource list when names appear or disappear. Tests leave it
+// unset (or install a counter). Fire-and-forget — never throws to callers.
+type IndexChangeFn = () => void;
+let onIndexChange: IndexChangeFn | null = null;
+export function setOnIndexChange(fn: IndexChangeFn | null): void {
+  onIndexChange = fn;
+}
+function notifyIndexChanged(): void {
+  try {
+    onIndexChange?.();
+  } catch (e) {
+    // Notifications must never break a tool call.
+    console.error("mcp-env-keychain: sendResourceListChanged failed:", e);
+  }
+}
+
+// ---- Elicitation seam ----
+//
+// When a save_env call hits the looks-secret/plain conflict, we ask the user
+// via the client's elicitation channel instead of refusing outright. server.ts
+// wires this to `mcpServer.server.elicitInput`; tests inject a stub via
+// helpers.installElicitStub. When unset (or when the client lacks the
+// elicitation capability and the call throws), we fall back to the old refuse
+// behavior, so legacy clients see no change.
+type ElicitFn = (params: ElicitRequestFormParams) => Promise<ElicitResult>;
+let elicitFn: ElicitFn | null = null;
+export function setElicitFn(fn: ElicitFn | null): void {
+  elicitFn = fn;
+}
 
 export async function catalogPayload(): Promise<Catalog> {
   const index = await loadIndex();
@@ -29,21 +70,91 @@ export async function catalogPayload(): Promise<Catalog> {
 
 export async function catalogNamesPayload(): Promise<string[]> {
   const index = await loadIndex();
-  return [...new Set(Object.keys(index.entries))].sort((a, b) => a.localeCompare(b));
+  // Object.keys is already unique — no Set wrap needed.
+  return Object.keys(index.entries).sort((a, b) => a.localeCompare(b));
+}
+
+// Read handler for the keychain://env/{name} resource template. Returns
+// metadata only — never the value, regardless of kind. The Result envelope
+// lets the resource handler in server.ts surface "not found" cleanly.
+export async function getEnvMetadata(
+  rawName: string,
+): Promise<Result<{ metadata: EnvMetadata }>> {
+  const name = normalizeName(rawName);
+  if (!name) return { ok: false, error: "name is required" };
+  const index = await loadIndex();
+  const entry = index.entries[name];
+  if (!entry) return { ok: false, error: `no env named '${name}'` };
+  return {
+    ok: true,
+    metadata: {
+      name,
+      kind: entry.kind,
+      created_at: entry.created_at,
+      updated_at: entry.updated_at,
+    },
+  };
+}
+
+const SECRET_CONFLICT_HELP =
+  "looks like a secret. Re-call with kind='secret' (recommended), " +
+  "or rename it if it really is non-sensitive.";
+
+function refuseSecretAsPlain(name: string): SaveEnvResult {
+  return {
+    ok: false,
+    error: `Refusing to save '${name}' as kind='plain' because the name ${SECRET_CONFLICT_HELP}`,
+  };
+}
+
+async function resolveKindOnConflict(name: string): Promise<Kind | null> {
+  // Returns the kind to actually persist with, or null to refuse.
+  // - elicitFn unset / throws / cancel: null (preserve legacy refuse behavior)
+  // - decline: "plain" (user explicitly wanted plain)
+  // - accept + saveAsSecret=true: "secret"
+  // - accept + saveAsSecret=false: "plain"
+  if (!elicitFn) return null;
+  let result: ElicitResult;
+  try {
+    result = await elicitFn({
+      mode: "form",
+      message:
+        `'${name}' looks like a secret but you asked to save it as kind='plain'. ` +
+        `Save as 'secret' instead? (Recommended.)`,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          saveAsSecret: {
+            type: "boolean",
+            title: "Save as secret",
+            description: "Yes = store as kind='secret' (only usable via run_with_secrets).",
+          },
+        },
+        required: ["saveAsSecret"],
+      },
+    });
+  } catch {
+    // Client lacks elicitation capability, or transport error — fall back to
+    // the legacy refuse behavior so v0.2.x clients keep working identically.
+    return null;
+  }
+  if (result.action === "accept") {
+    const saveAsSecret = result.content?.["saveAsSecret"];
+    return saveAsSecret === false ? "plain" : "secret";
+  }
+  if (result.action === "decline") return "plain";
+  return null; // cancel
 }
 
 export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
-  const name = args.name.trim();
+  const name = normalizeName(args.name);
   if (!name) return { ok: false, error: "name is required" };
 
-  if (args.kind === "plain" && looksSecret(name)) {
-    return {
-      ok: false,
-      error:
-        `Refusing to save '${name}' as kind='plain' because the name ` +
-        "looks like a secret. Re-call with kind='secret' (recommended), " +
-        "or rename it if it really is non-sensitive.",
-    };
+  let kind: Kind = args.kind;
+  if (kind === "plain" && looksSecret(name)) {
+    const resolved = await resolveKindOnConflict(name);
+    if (resolved === null) return refuseSecretAsPlain(name);
+    kind = resolved;
   }
 
   await keychain().setPassword(name, args.value);
@@ -52,14 +163,15 @@ export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
   const existing = index.entries[name];
   const ts = now();
   const entry: Entry = {
-    kind: args.kind,
+    kind,
     created_at: existing?.created_at ?? ts,
     updated_at: ts,
   };
   index.entries[name] = entry;
   await saveIndex(index);
+  notifyIndexChanged();
 
-  return { ok: true, name, kind: args.kind };
+  return { ok: true, name, kind };
 }
 
 export async function listEnvs(): Promise<ListEnvsResult> {
@@ -67,7 +179,7 @@ export async function listEnvs(): Promise<ListEnvsResult> {
 }
 
 export async function findEnvs(pattern: string): Promise<FindEnvsResult> {
-  const pat = pattern.toLowerCase();
+  const pat = pattern.trim().toLowerCase();
   const index = await loadIndex();
   const matches = Object.entries(index.entries)
     .filter(([n]) => n.toLowerCase().includes(pat))
@@ -76,7 +188,9 @@ export async function findEnvs(pattern: string): Promise<FindEnvsResult> {
   return { pattern, count: matches.length, entries: matches };
 }
 
-export async function getPlain(name: string): Promise<GetPlainResult> {
+export async function getPlain(rawName: string): Promise<GetPlainResult> {
+  const name = normalizeName(rawName);
+  if (!name) return { ok: false, error: "name is required" };
   const index = await loadIndex();
   const entry = index.entries[name];
   if (!entry) return { ok: false, error: `no env named '${name}'` };
@@ -99,7 +213,9 @@ export async function getPlain(name: string): Promise<GetPlainResult> {
   return { ok: true, name, kind: "plain", value };
 }
 
-export async function deleteEnv(name: string): Promise<DeleteEnvResult> {
+export async function deleteEnv(rawName: string): Promise<DeleteEnvResult> {
+  const name = normalizeName(rawName);
+  if (!name) return { ok: false, error: "name is required" };
   const index = await loadIndex();
   if (!(name in index.entries)) {
     return { ok: false, error: `no env named '${name}'` };
@@ -112,6 +228,7 @@ export async function deleteEnv(name: string): Promise<DeleteEnvResult> {
   }
   delete index.entries[name];
   await saveIndex(index);
+  notifyIndexChanged();
   return { ok: true, name };
 }
 
@@ -141,7 +258,8 @@ export async function runWithSecrets(args: {
     return { ok: false, error: "command is required" };
   }
 
-  const keys = dedupe(args.env_keys ?? []);
+  // Normalize + dedupe each requested key so " FOO " and "FOO" resolve the same.
+  const keys = dedupe((args.env_keys ?? []).map(normalizeName).filter((k) => k.length > 0));
   const index = await loadIndex();
   const unknown = keys.filter((k) => !(k in index.entries));
   if (unknown.length > 0) {
@@ -241,10 +359,14 @@ export async function runWithSecrets(args: {
   }
 
   if (timedOut) {
+    // Preserve whatever the subprocess produced before being killed —
+    // that's exactly the output users need to debug a timeout.
     return {
       ok: false,
       error: `command exceeded timeout of ${timeout}s`,
       injected_keys: keys,
+      stdout: scrub(stdoutText, secretsOnly),
+      stderr: scrub(stderrText, secretsOnly),
     };
   }
 

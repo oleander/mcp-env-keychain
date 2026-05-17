@@ -1,4 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   saveEnv,
   listEnvs,
@@ -7,7 +9,8 @@ import {
   deleteEnv,
   runWithSecrets,
 } from "../src/tools.ts";
-import { setupTestEnv } from "./helpers.ts";
+import { loadIndex } from "../src/keychain.ts";
+import { installListChangedCounter, setupTestEnv } from "./helpers.ts";
 
 describe("mcp-env-keychain tools (smoke)", () => {
   beforeEach(() => {
@@ -117,3 +120,97 @@ describe("mcp-env-keychain tools (smoke)", () => {
     expect((await listEnvs()).count).toBe(0);
   });
 });
+
+describe("mcp-env-keychain bug fix coverage", () => {
+  beforeEach(() => {
+    setupTestEnv();
+  });
+
+  // B2: normalizeName at every entry point
+  test("untrimmed names are normalized symmetrically across all tools", async () => {
+    // Save with surrounding whitespace.
+    const saved = await saveEnv({ name: "  PADDED_URL  ", value: "u", kind: "plain" });
+    expect(saved.ok).toBe(true);
+    if (saved.ok) expect(saved.name).toBe("PADDED_URL");
+
+    // Lookup with different whitespace — should still find it.
+    const found = await getPlain(" PADDED_URL\t");
+    expect(found.ok).toBe(true);
+    if (found.ok) expect(found.value).toBe("u");
+
+    // Delete with surrounding whitespace.
+    const deleted = await deleteEnv("PADDED_URL ");
+    expect(deleted.ok).toBe(true);
+  });
+
+  test("run_with_secrets normalizes each env_keys entry", async () => {
+    await saveEnv({ name: "BACKEND_URL", value: "https://x.com", kind: "plain" });
+    const r = await runWithSecrets({
+      command: "echo $BACKEND_URL",
+      env_keys: ["  BACKEND_URL\t"],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.stdout).toContain("https://x.com");
+      expect(r.injected_keys).toEqual(["BACKEND_URL"]);
+    }
+  });
+
+  // B4: corrupt index recovery
+  test("loadIndex backs up a corrupt file and starts with an empty index", async () => {
+    const { indexFile, dir } = setupTestEnv();
+    // Plant a corrupt index that's valid JSON but fails the IndexSchema.
+    writeFileSync(indexFile, JSON.stringify({ entries: "not-an-object" }));
+
+    const loaded = await loadIndex();
+    expect(loaded.entries).toEqual({});
+
+    // A backup file should sit next to the original.
+    const siblings = readdirSync(dir);
+    const backup = siblings.find((f) => f.startsWith("index.json.corrupt."));
+    expect(backup).toBeDefined();
+    expect(existsSync(join(dir, backup!))).toBe(true);
+  });
+
+  test("loadIndex backs up an unparseable JSON file too", async () => {
+    const { indexFile, dir } = setupTestEnv();
+    writeFileSync(indexFile, "not valid json {{{");
+
+    const loaded = await loadIndex();
+    expect(loaded.entries).toEqual({});
+
+    const siblings = readdirSync(dir);
+    expect(siblings.some((f) => f.startsWith("index.json.corrupt."))).toBe(true);
+  });
+
+  // B7: preserved timeout output
+  test("run_with_secrets timeout preserves any captured stdout/stderr", async () => {
+    const r = await runWithSecrets({
+      command: 'echo "first line"; echo "second line" >&2; sleep 5',
+      env_keys: [],
+      timeout: 1,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("timeout");
+      // The kill happens after the early echoes drained.
+      expect(r.stdout).toContain("first line");
+      expect(r.stderr).toContain("second line");
+    }
+  });
+
+  // A4: list_changed seam fires on save and delete
+  test("save_env and delete_env each notify the index-change seam", async () => {
+    const counter = installListChangedCounter();
+
+    await saveEnv({ name: "BACKEND_URL", value: "u", kind: "plain" });
+    expect(counter.calls()).toBe(1);
+
+    await saveEnv({ name: "OTHER_URL", value: "u2", kind: "plain" });
+    expect(counter.calls()).toBe(2);
+
+    await deleteEnv("BACKEND_URL");
+    expect(counter.calls()).toBe(3);
+  });
+});
+

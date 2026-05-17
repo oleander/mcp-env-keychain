@@ -1,8 +1,18 @@
-import { existsSync, mkdirSync } from "node:fs";
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname } from "node:path";
+import { randomBytes } from "node:crypto";
 import { dlopen, FFIType, ptr, read, toArrayBuffer, type Pointer } from "bun:ffi";
 import { SERVICE, SECRET_HINT_TOKENS, resolveIndexPath } from "./constants.ts";
-import type { Index } from "./types.ts";
+import { IndexSchema, type Index } from "./types.ts";
 
 export interface KeychainBackend {
   getPassword(name: string): Promise<string | null>;
@@ -214,9 +224,37 @@ export async function loadIndex(): Promise<Index> {
   const path = indexPath();
   mkdirSync(dirname(path), { recursive: true });
   if (!existsSync(path)) return { entries: {} };
-  const file = Bun.file(path);
-  const parsed = (await file.json()) as Partial<Index>;
-  return { entries: parsed.entries ?? {} };
+
+  let parsed: unknown;
+  try {
+    parsed = await Bun.file(path).json();
+  } catch (e) {
+    return backupAndReset(path, "not valid JSON", e);
+  }
+
+  const result = IndexSchema.safeParse(parsed);
+  if (!result.success) {
+    return backupAndReset(path, "schema validation failed", result.error);
+  }
+  return result.data;
+}
+
+function backupAndReset(path: string, reason: string, err: unknown): Index {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = `${path}.corrupt.${ts}`;
+  try {
+    copyFileSync(path, backup);
+    console.error(
+      `mcp-env-keychain: index ${reason} at ${path}; backed up to ${backup}. ` +
+        `Starting with empty index. Cause: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } catch (copyErr) {
+    console.error(
+      `mcp-env-keychain: index ${reason} at ${path} and backup also failed (${copyErr instanceof Error ? copyErr.message : String(copyErr)}). ` +
+        `Starting with empty index.`,
+    );
+  }
+  return { entries: {} };
 }
 
 export async function saveIndex(index: Index): Promise<void> {
@@ -228,10 +266,39 @@ export async function saveIndex(index: Index): Promise<void> {
     const entry = index.entries[key];
     if (entry !== undefined) sorted.entries[key] = entry;
   }
-  await Bun.write(path, JSON.stringify(sorted, null, 2));
+  const payload = JSON.stringify(sorted, null, 2);
+
+  // Atomic write: write to a sibling temp file, fsync, then rename. Temp and
+  // target live in the same directory so rename is atomic on POSIX. fsync
+  // before rename means a crash mid-write can never produce a partial final
+  // file (we'd just leave an orphan .tmp that the next load ignores).
+  const tmp = `${path}.tmp.${process.pid}.${randomBytes(4).toString("hex")}`;
+  try {
+    await Bun.write(tmp, payload);
+    const fd = openSync(tmp, "r+");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      // ignore — the orphan is harmless, it's not the final path
+    }
+    throw e;
+  }
 }
 
 // Pure helpers — ported 1:1 from server.py.
+
+// Single source of normalization. Every tool that takes an env name routes
+// through this so " FOO " and "FOO" are the same lookup.
+export function normalizeName(s: string): string {
+  return s.trim();
+}
 
 export function looksSecret(name: string): boolean {
   const up = name.toUpperCase();
