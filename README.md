@@ -1,4 +1,4 @@
-# k-mcp (`mcp-env-keychain`)
+# mcp-env-keychain
 
 MCP server for macOS that stores environment-variable values in the Keychain and lets an LLM use them safely.
 
@@ -36,7 +36,7 @@ bun run start
 ### Claude Code
 
 ```bash
-claude mcp add -s user k-mcp -- bun run /absolute/path/to/mcp-env-keychain/src/index.ts
+claude mcp add -s user mcp-env-keychain -- bun run /absolute/path/to/mcp-env-keychain/src/index.ts
 ```
 
 ### Cursor (`~/.cursor/mcp.json`)
@@ -44,7 +44,7 @@ claude mcp add -s user k-mcp -- bun run /absolute/path/to/mcp-env-keychain/src/i
 ```json
 {
   "mcpServers": {
-    "k-mcp": {
+    "mcp-env-keychain": {
       "command": "bun",
       "args": ["run", "/absolute/path/to/mcp-env-keychain/src/index.ts"]
     }
