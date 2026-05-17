@@ -92,22 +92,28 @@ if !ok {
 exit(0)
 `;
 
-// Cached availability check — `Bun.which` is cheap but no need to repeat.
-let swiftPathCache: string | null | undefined;
+// Memoize the resolved Swift path on success only. A null lookup (no Xcode
+// CLT) stays uncached so a user who installs the toolchain after the first
+// `run_with_secrets` attempt doesn't have to restart the server.
+let swiftPathCache: string | null = null;
 function findSwift(): string | null {
-  if (swiftPathCache === undefined) swiftPathCache = Bun.which("swift");
-  return swiftPathCache;
+  if (swiftPathCache !== null) return swiftPathCache;
+  const resolved = Bun.which("swift");
+  if (resolved !== null) swiftPathCache = resolved;
+  return resolved;
 }
 
 async function swiftAuthenticate(reason: string): Promise<void> {
-  if (findSwift() === null) {
+  const swiftPath = findSwift();
+  if (swiftPath === null) {
     throw new TouchIDNotAvailable(
       "Touch ID requires the Swift toolchain (used to drive LAContext from a clean realm). " +
         "Install Xcode Command Line Tools and retry:\n  xcode-select --install",
     );
   }
   // swift - reads source from stdin and JIT-compiles. Cold start ~1-2s.
-  const proc = Bun.spawn(["swift", "-", reason], {
+  // Use the resolved absolute path rather than re-resolving via $PATH.
+  const proc = Bun.spawn([swiftPath, "-", reason], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
