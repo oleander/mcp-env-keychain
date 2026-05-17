@@ -4,6 +4,7 @@
   "description": "MCP server for storing and using env secrets in the macOS Keychain (TypeScript on Bun)",
   "type": "module",
   "bin": {
+    "mcp-env-keychain": "./src/index.ts",
     "k-mcp": "./src/index.ts"
   },
   "files": [

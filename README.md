@@ -27,14 +27,16 @@ npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"
 Then launch the server:
 
 ```bash
-bunx --package @oleander/mcp-env-keychain@0.2.1 k-mcp
+bunx --package @oleander/mcp-env-keychain@latest mcp-env-keychain
 # or
-npx --yes --package=@oleander/mcp-env-keychain@0.2.1 k-mcp
+npx --yes --package=@oleander/mcp-env-keychain@latest mcp-env-keychain
 ```
 
-The auth command assumes you are logged into the GitHub CLI with a token that has package access. To check, run `gh auth status`. `npx` is supported as a package launcher, but it still needs `bun` on `PATH` because this MCP server uses Bun-specific APIs.
+The auth command assumes you are logged into the GitHub CLI with a token that has package access. To check, run `gh auth status`. `npx` is supported as a package launcher, but it still needs `bun` on `PATH` because this MCP server uses Bun-specific APIs. The package also keeps `k-mcp` as a shorter binary alias.
 
-Do not include `run` in these commands. `npx run @oleander/mcp-env-keychain@0.2.1` and `bunx run @oleander/mcp-env-keychain@0.2.1` try to execute a different `run` command/package instead of the `k-mcp` binary.
+To check the published version, use `npm view @oleander/mcp-env-keychain@latest version --registry=https://npm.pkg.github.com`, not `npx`.
+
+Do not include `run` in these commands. `npx run @oleander/mcp-env-keychain@latest` and `bunx run @oleander/mcp-env-keychain@latest` try to execute a different `run` command/package instead of the MCP server binary.
 
 ## Develop locally
 
