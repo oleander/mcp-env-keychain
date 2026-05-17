@@ -87,6 +87,10 @@ bun run typecheck  # tsc --noEmit
 bun run compile    # compile to dist/k-mcp
 ```
 
+## Releases
+
+Pushing a tag like `v0.2.1` now triggers the `Release` GitHub Actions workflow, which builds a precompiled macOS binary and uploads `k-mcp-macos-<arch>.tar.gz` to the GitHub release.
+
 ## Troubleshooting
 
 - **No Touch ID prompt appears:** Touch ID is requested only when `run_with_secrets` injects at least one `secret` key. Plain-only runs do not prompt.
