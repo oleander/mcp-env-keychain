@@ -34,6 +34,17 @@ describe("mcp-env-keychain tools (smoke)", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("save_env refuses secret values shorter than the scrub floor", async () => {
+    const r = await saveEnv({ name: "API_KEY", value: "abc", kind: "secret" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("at least 4 characters");
+  });
+
+  test("save_env accepts secret values at the scrub floor (exactly 4 chars)", async () => {
+    const r = await saveEnv({ name: "API_KEY", value: "abcd", kind: "secret" });
+    expect(r.ok).toBe(true);
+  });
+
   test("list_envs returns both entries with no values", async () => {
     await saveEnv({ name: "BACKEND_URL", value: "https://api.example.com", kind: "plain" });
     await saveEnv({ name: "STRIPE_API_KEY", value: "sk_live_x", kind: "secret" });
@@ -180,5 +191,24 @@ describe("index reliability (B2, B3, B4)", () => {
 
     const siblings = readdirSync(dir);
     expect(siblings.some((f) => f.startsWith("index.json.corrupt."))).toBe(true);
+  });
+
+  // Concurrent intra-process saves: without the withIndexLock serializer,
+  // racing read-modify-write cycles would drop entries. Asserts the mutex
+  // wired into saveEnv/deleteEnv works.
+  test("concurrent saveEnv calls all persist in the index", async () => {
+    const N = 10;
+    const saves = Array.from({ length: N }, (_, i) =>
+      saveEnv({ name: `CONCURRENT_${i}`, value: `value_${i}`, kind: "plain" }),
+    );
+    const results = await Promise.all(saves);
+    for (const r of results) expect(r.ok).toBe(true);
+
+    const list = await listEnvs();
+    expect(list.count).toBe(N);
+    const names = list.entries.map((e) => e.name).sort();
+    expect(names).toEqual(
+      Array.from({ length: N }, (_, i) => `CONCURRENT_${i}`).sort((a, b) => a.localeCompare(b)),
+    );
   });
 });

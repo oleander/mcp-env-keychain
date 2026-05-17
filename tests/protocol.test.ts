@@ -117,6 +117,29 @@ describe("mcp-env-keychain tools (MCP protocol)", () => {
     expect(r.stdout).toContain("[REDACTED:STRIPE_API_KEY]");
   });
 
+  test("scrubbing places [REDACTED:NAME] in stderr over protocol", async () => {
+    const client = await makeClient();
+    const SECRET = "sk_live_stderr_qrstuv";
+    await client.callTool({
+      name: "save_env",
+      arguments: { name: "STRIPE_API_KEY", value: SECRET, kind: "secret" },
+    });
+    const r = unwrap(
+      await client.callTool({
+        name: "run_with_secrets",
+        arguments: {
+          command: 'echo "OOPS=$STRIPE_API_KEY" 1>&2',
+          env_keys: ["STRIPE_API_KEY"],
+        },
+      }),
+    ) as { ok: true; stdout: string; stderr: string };
+    expect(r.ok).toBe(true);
+    expect(r.stderr).not.toContain(SECRET);
+    expect(r.stderr).toContain("[REDACTED:STRIPE_API_KEY]");
+    // Stdout shouldn't carry the secret either.
+    expect(r.stdout).not.toContain(SECRET);
+  });
+
   test("get_plain refuses secret over protocol", async () => {
     const client = await makeClient();
     await client.callTool({

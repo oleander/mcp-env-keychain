@@ -1,3 +1,4 @@
+import { MIN_SECRET_LEN } from "./constants.ts";
 import {
   keychain,
   loadIndex,
@@ -6,6 +7,7 @@ import {
   now,
   saveIndex,
   scrub,
+  withIndexLock,
 } from "./keychain.ts";
 import { ensureUnlocked, TouchIDAuthFailed, TouchIDNotAvailable } from "./touchid.ts";
 import type {
@@ -48,20 +50,34 @@ export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
     };
   }
 
-  await keychain().setPassword(name, args.value);
+  // Values shorter than MIN_SECRET_LEN bypass the scrub() floor, so a later
+  // run_with_secrets call could echo them back in stdout/stderr unredacted.
+  // Refuse at the boundary.
+  if (args.kind === "secret" && args.value.length < MIN_SECRET_LEN) {
+    return {
+      ok: false,
+      error:
+        `secret values must be at least ${MIN_SECRET_LEN} characters ` +
+        "(shorter values can leak through run_with_secrets output scrubbing).",
+    };
+  }
 
-  const index = await loadIndex();
-  const existing = index.entries[name];
-  const ts = now();
-  const entry: Entry = {
-    kind: args.kind,
-    created_at: existing?.created_at ?? ts,
-    updated_at: ts,
-  };
-  index.entries[name] = entry;
-  await saveIndex(index);
+  return await withIndexLock(async () => {
+    await keychain().setPassword(name, args.value);
 
-  return { ok: true, name, kind: args.kind };
+    const index = await loadIndex();
+    const existing = index.entries[name];
+    const ts = now();
+    const entry: Entry = {
+      kind: args.kind,
+      created_at: existing?.created_at ?? ts,
+      updated_at: ts,
+    };
+    index.entries[name] = entry;
+    await saveIndex(index);
+
+    return { ok: true, name, kind: args.kind };
+  });
 }
 
 export async function listEnvs(): Promise<ListEnvsResult> {
@@ -106,19 +122,21 @@ export async function getPlain(rawName: string): Promise<GetPlainResult> {
 export async function deleteEnv(rawName: string): Promise<DeleteEnvResult> {
   const name = normalizeName(rawName);
   if (!name) return { ok: false, error: "name is required" };
-  const index = await loadIndex();
-  if (!(name in index.entries)) {
-    return { ok: false, error: `no env named '${name}'` };
-  }
-  // Best-effort delete from keychain; index is authoritative on existence.
-  try {
-    await keychain().deletePassword(name);
-  } catch {
-    // already gone from Keychain — still drop the index entry
-  }
-  delete index.entries[name];
-  await saveIndex(index);
-  return { ok: true, name };
+  return await withIndexLock(async () => {
+    const index = await loadIndex();
+    if (!(name in index.entries)) {
+      return { ok: false, error: `no env named '${name}'` };
+    }
+    // Best-effort delete from keychain; index is authoritative on existence.
+    try {
+      await keychain().deletePassword(name);
+    } catch {
+      // already gone from Keychain — still drop the index entry
+    }
+    delete index.entries[name];
+    await saveIndex(index);
+    return { ok: true, name };
+  });
 }
 
 // Dedupe while preserving order.

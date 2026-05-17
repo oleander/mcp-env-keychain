@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { warnIfSiblingProcess } from "./keychain.ts";
 import { buildServer } from "./server.ts";
 
 async function main(): Promise<void> {
+  warnIfSiblingProcess();
   const server = await buildServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);

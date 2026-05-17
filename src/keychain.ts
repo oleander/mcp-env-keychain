@@ -7,11 +7,13 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readFileSync,
   renameSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { resolveIndexPath, SECRET_HINT_TOKENS, SERVICE } from "./constants.ts";
+import { MIN_SECRET_LEN, resolveIndexPath, SECRET_HINT_TOKENS, SERVICE } from "./constants.ts";
 import { type Index, IndexSchema } from "./types.ts";
 
 export interface KeychainBackend {
@@ -278,6 +280,49 @@ function backupAndReset(path: string, reason: string, err: unknown): Index {
   return { entries: {} };
 }
 
+// Single-process serializer for index read-modify-write cycles. The MCP SDK
+// does not serialize concurrent tool invocations, so two `save_env` calls
+// could race: both read the same index, mutate independently, and the second
+// write drops the first. `withIndexLock` chains every R-M-W block through a
+// single promise queue. It does NOT protect against multiple server processes
+// pointing at the same index file — see `warnIfSiblingProcess` for that hint.
+let indexLock: Promise<unknown> = Promise.resolve();
+export function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = indexLock.then(fn, fn);
+  indexLock = run.catch(() => {});
+  return run;
+}
+
+// Best-effort sibling-process detector. Writes our PID to `${index}.lock`. If
+// the file already exists with a live PID, we emit a one-line stderr warning.
+// This is NOT a hard lock — concurrent writes from two servers can still
+// corrupt the index — it just surfaces the misconfiguration.
+export function warnIfSiblingProcess(): void {
+  const path = indexPath();
+  const lock = `${path}.lock`;
+  try {
+    mkdirSync(dirname(lock), { recursive: true });
+    if (existsSync(lock)) {
+      const raw = readFileSync(lock, "utf8").trim();
+      const pid = Number(raw);
+      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) {
+        try {
+          process.kill(pid, 0);
+          console.error(
+            `mcp-env-keychain: warning — another instance (pid ${pid}) appears to be ` +
+              `using ${path}. Concurrent writes from multiple servers can corrupt the index.`,
+          );
+        } catch {
+          // ESRCH — stale lock, dead process. Silently overwrite.
+        }
+      }
+    }
+    writeFileSync(lock, String(process.pid));
+  } catch {
+    // Best-effort only. If we can't read/write the lock, the warning is silent.
+  }
+}
+
 export async function saveIndex(index: Index): Promise<void> {
   const path = indexPath();
   mkdirSync(dirname(path), { recursive: true });
@@ -329,7 +374,7 @@ export function looksSecret(name: string): boolean {
 export function scrub(text: string, secrets: Record<string, string>): string {
   let out = text;
   for (const [name, value] of Object.entries(secrets)) {
-    if (value.length >= 4) {
+    if (value.length >= MIN_SECRET_LEN) {
       out = out.split(value).join(`[REDACTED:${name}]`);
     }
   }

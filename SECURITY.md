@@ -48,6 +48,29 @@ to be exposed over a network or run as a multi-user daemon.
   zod, macOS itself) — please report those to the respective projects
 - Denial of service of the local stdio process
 
+## Defense-in-depth: limits of output scrubbing
+
+The primary control against secret values reaching the chat is the API
+shape: `list_envs`, `find_envs`, `get_plain`, and the `keychain://env-names`
+resource never return secret values, and `run_with_secrets` only places
+them into the subprocess env — not into its own return value. **Output
+scrubbing is defense-in-depth, not the primary control.**
+
+The `scrub()` pass over captured stdout/stderr has two intentional limits:
+
+- **Literal-substring match only.** If the subprocess transforms a secret
+  before printing — base64-encoding, URL-encoding, JSON-escaping, splitting
+  across lines — `scrub()` will not match the transformed form.
+- **Minimum length of 4 characters.** Secret values shorter than 4 chars
+  would cause pathological replacement of any matching 1-3 char run in
+  output (e.g. a 1-char secret `"a"` would redact every `a` in stdout).
+  `save_env` refuses to store secret-kind values shorter than 4 chars for
+  this reason.
+
+If you find a scenario where a secret value reaches a tool response by any
+path — including through encoded forms in captured output — please report
+it via the private advisory process above.
+
 ## Supported versions
 
 Only the latest published release on GitHub Packages is supported. If you

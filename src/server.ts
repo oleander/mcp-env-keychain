@@ -72,7 +72,8 @@ export async function buildServer(): Promise<McpServer> {
       description:
         "Store an env value in the macOS Keychain. " +
         "kind='plain' for non-sensitive (URLs, usernames), 'secret' for credentials. " +
-        "If the name looks like a secret (KEY/TOKEN/SECRET/PASS/etc.) but kind='plain', the save is refused.",
+        "If the name looks like a secret (KEY/TOKEN/SECRET/PASS/etc.) but kind='plain', the save is refused. " +
+        "Secret values must be at least 4 characters (shorter values can leak through run_with_secrets output scrubbing).",
       inputSchema: {
         name: z.string(),
         value: z.string(),
@@ -133,7 +134,9 @@ export async function buildServer(): Promise<McpServer> {
       description:
         "Run a shell command with named Keychain values injected as env vars. " +
         "The ONLY way to use secret-kind values. Secret values are placed in the subprocess env but NEVER appear in this tool's return value. " +
-        "Captured stdout/stderr are scrubbed of any literal secret values as defense-in-depth.",
+        "Captured stdout/stderr are scrubbed of any literal secret values as defense-in-depth (literal-substring match, values <4 chars not scrubbed). " +
+        "First call in a session that injects any secret-kind value prompts the user for Touch ID. " +
+        "Once unlocked, ALL secrets stored by this server are usable via run_with_secrets for the lifetime of this server process — Touch ID is NOT re-prompted per call or per secret.",
       inputSchema: {
         command: z.string(),
         env_keys: z.array(z.string()),
