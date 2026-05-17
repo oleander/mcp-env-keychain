@@ -14,6 +14,13 @@
 # `repo`; for a fine-grained PAT, grant repository `Pull requests: write`.
 # There is no standalone `graphql` PAT scope. GITHUB_TOKEN silently no-ops
 # the requestReviews mutation for the Copilot bot — only a user PAT works.
+#
+# Trust model: workflow_dispatch requires write access to this repo. A user
+# with write access can therefore pick any open PR number and any of the
+# three routing branches (resolve threads, prompt cloud-agent, request
+# Copilot review) by synthesizing review_user_id / review_user_login. The
+# resolver step rejects malformed numeric inputs, but assume any repo
+# writer can fire any branch on any open PR.
 
 name: Copilot Review and Resolve
 
@@ -32,7 +39,10 @@ on:
       pr_number:
         description: 'PR number to operate on'
         required: true
-        type: string
+        # type: number is rejected client-side for non-numeric values, so
+        # the runner blocks bad input before the job starts. The bash regex
+        # below in the resolver remains as defense-in-depth.
+        type: number
       review_user_type:
         description: 'Synthesized github.event.review.user.type — gates the Bot-only cloud-agent branch'
         required: false
@@ -124,7 +134,18 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             pr_number="$INPUT_PR_NUMBER"
             review_user_type="$INPUT_REVIEW_USER_TYPE"
-            review_user_id="$INPUT_REVIEW_USER_ID"
+            # Strip leading zeros so the downstream string-compare against
+            # env.CODE_REVIEWER_USER_ID can't be defeated by "00175728472".
+            # printf '%d' would also normalize, but it re-interprets leading
+            # zeros as octal ("0123" → 83), so we precheck for digits-only
+            # input and then use a lexical sed strip — no base conversion.
+            case "$INPUT_REVIEW_USER_ID" in
+              ''|*[!0-9]*)
+                echo "::error::review_user_id must be a positive integer (got: '$INPUT_REVIEW_USER_ID')"
+                exit 1
+                ;;
+            esac
+            review_user_id=$(printf '%s' "$INPUT_REVIEW_USER_ID" | sed 's/^0*\([0-9]\)/\1/')
             review_user_login="$INPUT_REVIEW_USER_LOGIN"
             reject_multiline() {
               local name="$1"
