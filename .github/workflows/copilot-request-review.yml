@@ -60,6 +60,64 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      # ==== DEBUG: print every value used by step `if:` conditions ====
+      # No `if:` — always runs. Each comparison value goes through env: so
+      # untrusted strings (login, etc.) can't be injected into the shell.
+      - name: Debug — dump all comparison inputs
+        env:
+          REVIEW_USER_ID: ${{ github.event.review.user.id }}
+          REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
+          REVIEW_USER_TYPE: ${{ github.event.review.user.type }}
+          REVIEW_USER_NODE_ID: ${{ github.event.review.user.node_id }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_SUBMITTED_AT: ${{ github.event.review.submitted_at }}
+          REVIEW_AUTHOR_ASSOCIATION: ${{ github.event.review.author_association }}
+          REVIEW_COMMIT_ID: ${{ github.event.review.commit_id }}
+          PR_NUMBER_RAW: ${{ github.event.pull_request.number }}
+          PR_NODE_ID_RAW: ${{ github.event.pull_request.node_id }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          printf '=== inputs the step if-conditions read ===\n'
+          printf '  review.user.id          = %q\n' "$REVIEW_USER_ID"
+          printf '  review.user.login       = %q\n' "$REVIEW_USER_LOGIN"
+          printf '  review.user.type        = %q\n' "$REVIEW_USER_TYPE"
+          printf '  review.user.node_id     = %q\n' "$REVIEW_USER_NODE_ID"
+          printf '  review.state            = %q\n' "$REVIEW_STATE"
+          printf '  review.id               = %q\n' "$REVIEW_ID"
+          printf '  review.submitted_at     = %q\n' "$REVIEW_SUBMITTED_AT"
+          printf '  review.author_assoc.    = %q\n' "$REVIEW_AUTHOR_ASSOCIATION"
+          printf '  review.commit_id        = %q\n' "$REVIEW_COMMIT_ID"
+          printf '  pull_request.number     = %q\n' "$PR_NUMBER_RAW"
+          printf '  pull_request.node_id    = %q\n' "$PR_NODE_ID_RAW"
+          printf '  pull_request.head.sha   = %q\n' "$PR_HEAD_SHA"
+          printf '  pull_request.head.ref   = %q\n' "$PR_HEAD_REF"
+          printf '  pull_request.draft      = %q\n' "$PR_DRAFT"
+          printf '  pull_request.user.login = %q\n' "$PR_AUTHOR_LOGIN"
+          printf '  github.actor            = %q\n' "$GH_ACTOR"
+          printf '  github.triggering_actor = %q\n' "$GH_TRIGGERING_ACTOR"
+          printf '  github.event_name       = %q\n' "$GH_EVENT_NAME"
+          printf '  github.repository       = %q\n' "$GH_REPOSITORY"
+          printf '  github.repository_owner = %q\n' "$GH_REPOSITORY_OWNER"
+          printf '\n=== env: constants that conditions compare against ===\n'
+          printf '  env.CODE_REVIEWER_USER_ID = %q\n' "$CODE_REVIEWER_USER_ID"
+          printf '  env.COPILOT_BOT_NODE_ID   = %q\n' "$COPILOT_BOT_NODE_ID"
+          printf '  env.MAX_COPILOT_REVIEWS   = %q\n' "$MAX_COPILOT_REVIEWS"
+          printf '\n=== derived booleans (mirrors step if-expressions) ===\n'
+          if [ "$REVIEW_USER_ID" = "$CODE_REVIEWER_USER_ID" ]; then is_code_reviewer=true; else is_code_reviewer=false; fi
+          case "$REVIEW_USER_LOGIN" in *swe-agent*|*cloud-agent*) login_swe_or_cloud=true ;; *) login_swe_or_cloud=false ;; esac
+          printf '  review.user.id == CODE_REVIEWER_USER_ID    -> %s\n' "$is_code_reviewer"
+          printf '  review.user.type == "Bot"                  -> %s\n' "$([ "$REVIEW_USER_TYPE" = "Bot" ] && echo true || echo false)"
+          printf '  review.user.login contains swe/cloud-agent -> %s\n' "$login_swe_or_cloud"
+
       # ==== CLOUDBOT: Resolve threads after its review ====
       - name: Resolve threads after cloud-agent review
         if: |
