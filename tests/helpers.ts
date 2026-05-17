@@ -20,14 +20,14 @@ export function makeMemoryKeychain(): KeychainBackend {
   };
 }
 
-export function setupTestEnv(): { indexFile: string } {
+export function setupTestEnv(): { indexFile: string; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "mcp-env-keychain-test-"));
   const indexFile = join(dir, "index.json");
   setIndexPath(indexFile);
   setKeychainBackend(makeMemoryKeychain());
   setAuth(async () => {});
   resetSession();
-  return { indexFile };
+  return { indexFile, dir };
 }
 
 export function installAuthCounter(): { calls: () => number; reset: () => void } {
