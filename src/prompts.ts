@@ -34,8 +34,9 @@ export const importEnvFilePrompt = {
             `   - \`secret\` if the name contains KEY/TOKEN/SECRET/PASS/PWD/CRED/AUTH, ` +
             `or the value looks like a credential (long hex, JWT-shaped, sk_*, ghp_*, etc.).\n` +
             `   - \`plain\` for URLs, hostnames, usernames, ports, region codes, feature flags.\n` +
-            `4. Call \`save_env({name, value, kind})\` for each. If the server elicits a ` +
-            `\`plain\` vs \`secret\` confirmation, defer to the user.\n` +
+            `4. Call \`save_env({name, value, kind})\` for each. If a name looks ` +
+            `like a secret but you passed \`kind='plain'\`, the save will be ` +
+            `refused — re-call with \`kind='secret'\` (or rename the var).\n` +
             `5. Report a final summary: imported (count), skipped (count + reasons), failed (count + reasons).\n\n` +
             `Do not echo any value into the chat — only names.`,
         },

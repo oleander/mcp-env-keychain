@@ -31,18 +31,11 @@ describe("mcp-env-keychain tools (MCP protocol)", () => {
     setupTestEnv();
   });
 
-  test("all 6 tools are registered", async () => {
+  test("all 5 tools are registered", async () => {
     const client = await makeClient();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual([
-      "delete_env",
-      "find_envs",
-      "get_plain",
-      "list_envs",
-      "run_with_secrets",
-      "save_env",
-    ]);
+    expect(names).toEqual(["delete_env", "get_plain", "list_envs", "run_with_secrets", "save_env"]);
     for (const t of tools) {
       expect(t.inputSchema).toBeDefined();
     }

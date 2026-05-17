@@ -56,33 +56,6 @@ describe("mcp-env-keychain discovery surfaces", () => {
     expect(parsed[1]).toBe("OLDER_URL");
   });
 
-  test("keychain://env-names alias still returns the flat name array", async () => {
-    const client = await makeClient();
-    const empty = await client.readResource({ uri: "keychain://env-names" });
-    const emptyFirst = empty.contents[0];
-    if (
-      emptyFirst === undefined ||
-      !("text" in emptyFirst) ||
-      typeof emptyFirst.text !== "string"
-    ) {
-      throw new Error("empty alias read returned no text content");
-    }
-    expect(JSON.parse(emptyFirst.text)).toEqual([]);
-
-    await saveEnv({ name: "NEW_URL", value: "u", kind: "plain" });
-
-    const filled = await client.readResource({ uri: "keychain://env-names" });
-    const filledFirst = filled.contents[0];
-    if (
-      filledFirst === undefined ||
-      !("text" in filledFirst) ||
-      typeof filledFirst.text !== "string"
-    ) {
-      throw new Error("filled alias read returned no text content");
-    }
-    expect(JSON.parse(filledFirst.text)).toEqual(["NEW_URL"]);
-  });
-
   test("ResourceTemplate list enumerates one resource per stored env", async () => {
     await saveEnv({ name: "BACKEND_URL", value: "u", kind: "plain" });
     await saveEnv({ name: "STRIPE_API_KEY", value: "sk_x", kind: "secret" });
@@ -91,10 +64,8 @@ describe("mcp-env-keychain discovery surfaces", () => {
     const { resources } = await client.listResources();
     const uris = resources.map((r) => r.uri).sort();
 
-    // Two env-template resources + the legacy alias.
     expect(uris).toContain("keychain://env/BACKEND_URL");
     expect(uris).toContain("keychain://env/STRIPE_API_KEY");
-    expect(uris).toContain("keychain://env-names");
   });
 
   test("keychain://env/{name} returns metadata only, never the value", async () => {
@@ -162,7 +133,6 @@ describe("mcp-env-keychain discovery surfaces", () => {
 
     expect(byName.get("list_envs")?.annotations?.readOnlyHint).toBe(true);
     expect(byName.get("list_envs")?.annotations?.idempotentHint).toBe(true);
-    expect(byName.get("find_envs")?.annotations?.readOnlyHint).toBe(true);
     expect(byName.get("get_plain")?.annotations?.readOnlyHint).toBe(true);
     expect(byName.get("save_env")?.annotations?.idempotentHint).toBe(true);
     expect(byName.get("delete_env")?.annotations?.destructiveHint).toBe(true);

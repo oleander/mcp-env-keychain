@@ -22,7 +22,6 @@ export type Catalog = { count: number; entries: CatalogEntry[] };
 
 export type SaveEnvResult = Result<{ name: string; kind: Kind }>;
 export type ListEnvsResult = Catalog;
-export type FindEnvsResult = { pattern: string; count: number; entries: CatalogEntry[] };
 export type GetPlainResult = Result<{ name: string; kind: "plain"; value: string }>;
 export type DeleteEnvResult = Result<{ name: string }>;
 
@@ -70,12 +69,6 @@ export const ListEnvsOutput = z.object({
   entries: z.array(CatalogEntrySchema),
 });
 
-export const FindEnvsOutput = z.object({
-  pattern: z.string(),
-  count: z.number().int().nonnegative(),
-  entries: z.array(CatalogEntrySchema),
-});
-
 export const GetPlainOutput = z.object({
   ok: z.boolean(),
   name: z.string().optional(),
@@ -119,8 +112,6 @@ export const SaveEnvInput = z.object({
   kind: KindSchema,
 });
 
-export const FindEnvsInput = z.object({ pattern: z.string() });
-
 export const GetPlainInput = z.object({ name: z.string() });
 
 export const DeleteEnvInput = z.object({ name: z.string() });
@@ -135,7 +126,6 @@ export const RunWithSecretsInput = z.object({
 export const ListEnvsInput = z.object({});
 
 export type SaveEnvArgs = z.infer<typeof SaveEnvInput>;
-export type FindEnvsArgs = z.infer<typeof FindEnvsInput>;
 export type GetPlainArgs = z.infer<typeof GetPlainInput>;
 export type DeleteEnvArgs = z.infer<typeof DeleteEnvInput>;
 export type RunWithSecretsArgs = z.infer<typeof RunWithSecretsInput>;

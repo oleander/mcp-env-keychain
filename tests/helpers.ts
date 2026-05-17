@@ -1,10 +1,8 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import type { KeychainBackend } from "../src/keychain.ts";
 import { setIndexPath, setKeychainBackend } from "../src/keychain.ts";
-import { setElicitFn } from "../src/tools.ts";
 import { resetSession, setAuth } from "../src/touchid.ts";
 
 export function makeMemoryKeychain(): KeychainBackend {
@@ -29,28 +27,7 @@ export function setupTestEnv(): { indexFile: string; dir: string } {
   setKeychainBackend(makeMemoryKeychain());
   setAuth(async () => {});
   resetSession();
-  // Clear any elicitation stub from a prior test.
-  setElicitFn(null);
   return { indexFile, dir };
-}
-
-// Wires a stub elicitation function. The supplied responder receives the
-// elicitInput params and decides what to return — tests can model accept,
-// decline, cancel, or "client lacks capability" (throw).
-export function installElicitStub(
-  responder: (params: ElicitRequestFormParams) => Promise<ElicitResult> | ElicitResult,
-): { calls: () => number; lastParams: () => ElicitRequestFormParams | null } {
-  let n = 0;
-  let last: ElicitRequestFormParams | null = null;
-  setElicitFn(async (params) => {
-    n += 1;
-    last = params;
-    return await responder(params);
-  });
-  return {
-    calls: () => n,
-    lastParams: () => last,
-  };
 }
 
 export function installAuthCounter(): { calls: () => number; reset: () => void } {

@@ -23,13 +23,13 @@ Every stored entry has a `kind`:
 - **`plain`** — URLs, hostnames, usernames. Retrievable verbatim via `get_plain`.
 - **`secret`** — API keys, tokens. **Never** returned by any tool. The *only* way to use a secret is `run_with_secrets`, which injects values into a `bash -lc` subprocess's environment.
 
-If a name *looks* secret (contains KEY/TOKEN/SECRET/PASS/PWD/CRED/AUTH — see `SECRET_HINT_TOKENS` in `src/constants.ts`) but the caller asks for `kind="plain"`, `save_env` asks the user via the MCP elicitation channel ("save as 'secret' instead?"). If the client supports elicitation, the user resolves the conflict explicitly. If the client doesn't (or the user cancels), `save_env` falls back to refusing outright. Either way, a `get_plain` of a secret-named entry can't leak it. See `resolveKindOnConflict` in `src/tools.ts` and `setElicitFn` for the test seam.
+If a name *looks* secret (contains KEY/TOKEN/SECRET/PASS/PWD/CRED/AUTH — see `SECRET_HINT_TOKENS` in `src/constants.ts`) but the caller asks for `kind="plain"`, `save_env` refuses outright. The caller must re-call with `kind="secret"` (or rename the var). This means a `get_plain` of a secret-named entry can't leak it. See `refuseSecretAsPlain` in `src/tools.ts`.
 
 The TS type system pins this: `Result<{kind: "plain"; value: string}>` for `get_plain` means it's a compile error to construct a success return that isn't kind-plain.
 
 ### Name normalization
 
-Every tool that takes an env name routes through `normalizeName(s) = s.trim()` (`src/keychain.ts`). Saving `" FOO "` and looking up `"FOO\t"` resolve to the same entry. Tools: `save_env`, `get_plain`, `delete_env`, `run_with_secrets` (per env_key), and `find_envs` (pattern).
+Every tool that takes an env name routes through `normalizeName(s) = s.trim()` (`src/keychain.ts`). Saving `" FOO "` and looking up `"FOO\t"` resolve to the same entry. Tools: `save_env`, `get_plain`, `delete_env`, and `run_with_secrets` (per env_key).
 
 ### Storage layout
 
@@ -41,7 +41,7 @@ Every tool that takes an env name routes through `normalizeName(s) = s.trim()` (
 
 ### Discovery surfaces (LLM-facing)
 
-Five complementary mechanisms expose what's stored — none of them return values:
+Four complementary mechanisms expose what's stored — none of them return values:
 
 1. **`instructions` at handshake** — `buildInstructions()` (`src/server.ts`) reads the index at startup and emits two labeled JSON arrays into the MCP `initialize` response:
    ```
@@ -50,18 +50,17 @@ Five complementary mechanisms expose what's stored — none of them return value
    ```
    Bucketed by kind, sorted by `updated_at` desc, full catalog (no count cap). Machine-parseable in one shot.
 2. **`keychain://env/{name}` resource template** (`src/server.ts`) — RFC 6570 URI template. Reading any concrete URI returns `{ ok, metadata: { name, kind, created_at, updated_at } }` (no value). The `list` callback enumerates one resource per stored env, so clients can browse without a tool call. The `complete.name` callback offers prefix autocomplete from the current index.
-3. **`keychain://env-names` static resource** — legacy alias kept for backward-compatibility with v0.2.x clients. Same flat JSON name array as before.
-4. **`notifications/resources/list_changed`** — fired after every successful `save_env` / `delete_env` via the `setOnIndexChange` seam in `tools.ts` (wired to `server.sendResourceListChanged()` from `server.ts`). Clients refresh their resource list immediately.
-5. **Per-tool `outputSchema` + `annotations`** on every `registerTool` call. `outputSchema` is a flat `z.object` so the SDK's `normalizeObjectSchema` can wrap it (it doesn't accept discriminated unions at the top level — keep this in mind if extending). Annotations: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`.
+3. **`notifications/resources/list_changed`** — fired after every successful `save_env` / `delete_env` via the `setOnIndexChange` seam in `tools.ts` (wired to `server.sendResourceListChanged()` from `server.ts`). Clients refresh their resource list immediately.
+4. **Per-tool `outputSchema` + `annotations`** on every `registerTool` call. `outputSchema` is a flat `z.object` so the SDK's `normalizeObjectSchema` can wrap it (it doesn't accept discriminated unions at the top level — keep this in mind if extending). Annotations: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`.
 
 Prompts: `src/prompts.ts` ships `import-env-file` and `audit-stale`. Each is a user-invokable template that emits a single user-role workflow message; the agent drives the actual tool calls.
 
-The `tests/discovery.test.ts`, `tests/prompts.test.ts`, `tests/elicitation.test.ts`, and `tests/protocol.test.ts` files pin these contracts.
+The `tests/discovery.test.ts`, `tests/prompts.test.ts`, and `tests/protocol.test.ts` files pin these contracts.
 
 ### Secret-leak defenses (defense-in-depth)
 
 Three independent layers prevent a secret value from reaching the chat:
-1. **API shape** — `list_envs`, `find_envs`, `get_plain` (for secret-kind), and the catalog resource simply don't return values. Enforced at compile time by `Result<{kind: "plain"; value: string}>`.
+1. **API shape** — `list_envs`, `get_plain` (for secret-kind), and the catalog resource simply don't return values. Enforced at compile time by `Result<{kind: "plain"; value: string}>`.
 2. **Output scrubbing** — `scrub()` in `src/keychain.ts` replaces any literal secret value of length ≥ 4 in `run_with_secrets`'s captured stdout/stderr with `[REDACTED:NAME]`. Catches accidents like `echo $STRIPE_KEY`. Length floor avoids pathological replacement from 1-char secrets. The scrub also applies to stdout/stderr preserved alongside a timeout error.
 3. **Error sanitization** — error messages in `run_with_secrets` are constructed from key *names* and exception types only, never from values.
 
@@ -86,8 +85,8 @@ src/
   index.ts        — entrypoint: builds server, connects StdioServerTransport, SIGINT handler
   server.ts       — registerTool / registerResource / registerPrompt wiring; buildInstructions();
                     JSON-import of package.json for serverInfo.version (no runtime FS read)
-  tools.ts        — the 6 tool implementations + getEnvMetadata (resource read); setOnIndexChange
-                    + setElicitFn test seams; normalizeName at every entry point
+  tools.ts        — the 5 tool implementations + getEnvMetadata (resource read); setOnIndexChange
+                    test seam; normalizeName at every entry point
   prompts.ts      — import-env-file, audit-stale prompt definitions
   keychain.ts     — Security.framework FFI backend; atomic saveIndex (temp+fsync+rename);
                     zod-validated loadIndex with corrupt-file backup; scrub/looksSecret/normalizeName/now
@@ -97,14 +96,13 @@ src/
                     IndexSchema for persisted index validation
   constants.ts    — SERVICE, SECRET_HINT_TOKENS, INDEX_PATH resolution
 tests/
-  helpers.ts          — setupTestEnv, installAuthCounter, installFailingAuth, installElicitStub
+  helpers.ts          — setupTestEnv, installAuthCounter, installFailingAuth
   smoke.test.ts       — every tool through its direct function entry; bug-fix coverage
                         (normalizeName symmetry, corrupt index recovery, preserved timeout output)
   protocol.test.ts    — client ↔ server over InMemoryTransport; secret-absence audit
   discovery.test.ts   — instructions JSON format; outputSchema + annotations on tools/list;
-                        ResourceTemplate list + read; alias backward compat; list_changed seam
+                        ResourceTemplate list + read; list_changed seam
   prompts.test.ts     — prompts/list + getPrompt for both shipped prompts
-  elicitation.test.ts — save_env conflict elicitation: accept/decline/cancel/missing-capability
   touchid.test.ts     — gate fires once per session; failure path
 ```
 
@@ -117,4 +115,3 @@ tests/
 - Avoid `bun:ffi` for async callback patterns (Apple blocks, libdispatch reply blocks, etc.). Bun's `JSCallback` does not preserve scope when invoked from a non-JS thread. Prefer shelling out to a small Swift program via `swift -`.
 - **Version source of truth.** `serverInfo.version` is sourced from `package.json` via a static JSON import (`import pkg from "../package.json" with { type: "json" };` in `src/server.ts`). Bun statically embeds the JSON into compiled binaries at bundle time — no `--compile-autoload-package-json` flag needed. Do not duplicate the version literal elsewhere.
 - **outputSchema constraints.** The SDK's `normalizeObjectSchema` only accepts ZodObject (or a raw `{key: schema}` shape it can wrap into z.object), not ZodDiscriminatedUnion. When adding new tools, model the result as a flat `z.object({...})` with optional variant-specific fields. The TS-level `Result<T>` invariant is preserved in `src/types.ts`; the runtime JSON-schema is laxer.
-- **Elicitation fallback contract.** Anything that calls `setElicitFn` via `mcpServer.server.elicitInput(...)` must handle the throw path: clients without the `elicitation` capability return a rejection. Tools must degrade gracefully (e.g. `resolveKindOnConflict` returns `null` on throw, which the caller treats as "refuse" — the legacy v0.2.x behavior).

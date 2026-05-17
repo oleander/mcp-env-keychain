@@ -73,11 +73,9 @@ claude mcp add -s user k-mcp -- bunx --package @oleander/mcp-env-keychain k-mcp
 All tools advertise an `outputSchema` and behavior annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) so MCP clients can render confirmations and rich types.
 
 - `save_env(name, value, kind)` — `idempotentHint`  
-  Store/update an entry. If the name looks like a secret (KEY/TOKEN/SECRET/PASS/PWD/CRED/AUTH) but `kind="plain"`, the server asks the user via the MCP elicitation channel to confirm. Clients without elicitation support get the legacy "refuse outright" behavior.
+  Store/update an entry. If the name looks like a secret (KEY/TOKEN/SECRET/PASS/PWD/CRED/AUTH) but `kind="plain"`, the save is refused — re-call with `kind="secret"` or rename the variable.
 - `list_envs()` — `readOnlyHint`, `idempotentHint`  
   Lists names, kinds, and timestamps only (never values).
-- `find_envs(pattern)` — `readOnlyHint`, `idempotentHint`  
-  Case-insensitive name search, metadata only.
 - `get_plain(name)` — `readOnlyHint`, `idempotentHint`  
   Returns value only for entries stored as `kind="plain"`.
 - `delete_env(name)` — `destructiveHint`, `idempotentHint`  
@@ -87,7 +85,6 @@ All tools advertise an `outputSchema` and behavior annotations (`readOnlyHint`, 
 
 ## Resources
 
-- `keychain://env-names` — flat JSON array of stored names. Legacy alias preserved for v0.2.x compatibility.
 - `keychain://env/{name}` — per-env metadata (`{ name, kind, created_at, updated_at }`). The server's `list` callback enumerates one resource per stored env, and `complete.name` autocompletes from the current index. Values are **never** returned.
 - The server emits `notifications/resources/list_changed` after every successful `save_env` / `delete_env`, so clients refresh immediately.
 
