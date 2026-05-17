@@ -9,6 +9,7 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "test": "bun test",
+    "lint": "bunx @biomejs/biome@2.4.15 lint .",
     "typecheck": "bunx tsc --noEmit",
     "compile": "bun build src/index.ts --compile --outfile dist/k-mcp"
   },

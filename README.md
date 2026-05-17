@@ -83,6 +83,7 @@ From `package.json`:
 ```bash
 bun run start      # run server
 bun test           # test suite
+bun run lint       # biome lint
 bun run typecheck  # tsc --noEmit
 bun run compile    # compile to dist/k-mcp
 ```
