@@ -10,9 +10,10 @@
 #       → Requests a fresh code review from Copilot via the GraphQL
 #         requestReviews mutation, with a configurable per-PR cap.
 #
-# Requires GH CLI, jq, and a COPILOT_REQUEST_PAT with `pull requests: write`
-# and `repo` & `graphql` scopes. GITHUB_TOKEN silently no-ops the
-# requestReviews mutation for the Copilot bot — only a user PAT works.
+# Requires GH CLI, jq, and a COPILOT_REQUEST_PAT. For a classic PAT, use
+# `repo`; for a fine-grained PAT, grant repository `Pull requests: write`.
+# There is no standalone `graphql` PAT scope. GITHUB_TOKEN silently no-ops
+# the requestReviews mutation for the Copilot bot — only a user PAT works.
 
 name: Copilot Review and Resolve
 
@@ -55,11 +56,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
-      GH_TOKEN: ${{ secrets.COPILOT_REQUEST_PAT || github.token }}
+      GH_TOKEN: ${{ secrets.COPILOT_REQUEST_PAT }}
+      HAS_COPILOT_REQUEST_PAT: ${{ secrets.COPILOT_REQUEST_PAT != '' }}
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Validate required Copilot request token
+        if: env.HAS_COPILOT_REQUEST_PAT != 'true'
+        run: |
+          echo "COPILOT_REQUEST_PAT is required for this workflow."
+          echo "GITHUB_TOKEN cannot request Copilot reviews via the GraphQL requestReviews mutation."
+          exit 1
+
       # ==== DEBUG: print every value used by step `if:` conditions ====
       # No `if:` — always runs. Each comparison value goes through env: so
       # untrusted strings (login, etc.) can't be injected into the shell.
@@ -75,7 +84,6 @@ jobs:
           REVIEW_AUTHOR_ASSOCIATION: ${{ github.event.review.author_association }}
           REVIEW_COMMIT_ID: ${{ github.event.review.commit_id }}
           PR_NUMBER_RAW: ${{ github.event.pull_request.number }}
-          PR_NODE_ID_RAW: ${{ github.event.pull_request.node_id }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
