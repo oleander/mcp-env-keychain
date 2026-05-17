@@ -1,244 +1,46 @@
 name: Copilot Request Review
 
-# Auto-request a Copilot code review on every push to a non-draft
-# pull request, capped at MAX_COPILOT_REVIEWS lifetime requests per
-# PR. The cap is derived from GitHub's timeline; there is no hidden
-# state to maintain.
-#
-# Prerequisites:
-#   - The repository's copilot_code_review ruleset rule must be either
-#     removed or have review_on_push set to false. Otherwise both
-#     this workflow and the ruleset will compete to assign Copilot.
-#     See .github/copilot-babysit/README.md for the gh command.
-#
-# Behavior:
-#   - Skip while the PR is draft (Copilot does not review drafts).
-#   - Skip if copilot:paused label is present.
-#   - Count prior Copilot review-requests on the PR via the timeline.
-#   - If count < MAX: gh pr edit <N> --add-reviewer @copilot.
-#   - If count >= MAX: convert PR back to draft and add the
-#     copilot:loop-exhausted label.
-
 on:
-  pull_request:
+  pull_request_review:
     types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
-      - labeled
-  workflow_dispatch:
-    inputs:
-      pr:
-        description: PR number to operate on
-        required: true
-        type: number
+      - submitted
 
 permissions:
   contents: read
   pull-requests: write
 
 concurrency:
-  group: copilot-request-review-${{ github.event.pull_request.number || inputs.pr }}
+  group: copilot-request-review-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 env:
   MAX_COPILOT_REVIEWS: "5"
-  FORCE_LABEL: "copilot:force-review"
 
 jobs:
-  # Skip irrelevant `pull_request: labeled` events: only act on the
-  # force-review label or non-label events.
-  preflight:
-    runs-on: ubuntu-latest
-    outputs:
-      proceed: ${{ steps.gate.outputs.proceed }}
-      force:   ${{ steps.gate.outputs.force }}
-    steps:
-      - name: Gate on event/label
-        id: gate
-        env:
-          EVENT_ACTION: ${{ github.event.action }}
-          LABEL_NAME: ${{ github.event.label.name }}
-        run: |
-          set -euo pipefail
-          if [ "${EVENT_ACTION:-}" = "labeled" ]; then
-            if [ "${LABEL_NAME:-}" = "copilot:force-review" ]; then
-              echo "proceed=true"  >> "$GITHUB_OUTPUT"
-              echo "force=true"    >> "$GITHUB_OUTPUT"
-            else
-              echo "proceed=false" >> "$GITHUB_OUTPUT"
-              echo "force=false"   >> "$GITHUB_OUTPUT"
-              echo "::notice::labeled event for unrelated label '${LABEL_NAME:-}'; skipping."
-            fi
-          else
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-            echo "force=false"  >> "$GITHUB_OUTPUT"
-          fi
-
   request:
-    needs: preflight
-    if: needs.preflight.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      EVENT_PR: ${{ github.event.pull_request.number }}
-      INPUT_PR: ${{ inputs.pr }}
-      EVENT_NAME: ${{ github.event_name }}
-      FORCE_REVIEW: ${{ needs.preflight.outputs.force }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
-      - name: Resolve PR and basic state
-        id: resolve
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            pr="$INPUT_PR"
-          else
-            pr="$EVENT_PR"
-          fi
-          case "$pr" in
-            ''|*[!0-9]*) echo "::error::invalid PR number '$pr'"; exit 1 ;;
-          esac
-          state=$(gh api "repos/${GH_REPO}/pulls/${pr}" --jq '{draft, labels: [.labels[].name]}')
-          is_draft=$(jq -r '.draft' <<<"$state")
-          labels=$(jq -r '.labels | join(",")' <<<"$state")
-          {
-            echo "pr=$pr"
-            echo "draft=$is_draft"
-            echo "labels=$labels"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Skip draft PRs
-        if: steps.resolve.outputs.draft == 'true' && env.FORCE_REVIEW != 'true'
-        env:
-          PR: ${{ steps.resolve.outputs.pr }}
-        run: |
-          echo "PR #$PR is draft; Copilot does not review drafts. Skipping."
-          echo "Skipped: PR is draft." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Skip when paused
-        if: contains(steps.resolve.outputs.labels, 'copilot:paused') && env.FORCE_REVIEW != 'true'
-        env:
-          PR: ${{ steps.resolve.outputs.pr }}
-        run: |
-          echo "PR #$PR has copilot:paused; skipping."
-          echo "Skipped: copilot:paused." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Skip when loop-exhausted
-        if: contains(steps.resolve.outputs.labels, 'copilot:loop-exhausted') && env.FORCE_REVIEW != 'true'
-        env:
-          PR: ${{ steps.resolve.outputs.pr }}
-        run: |
-          echo "PR #$PR is loop-exhausted; operator must add copilot:force-review to retry."
-          echo "Skipped: copilot:loop-exhausted." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Count prior Copilot review requests
         id: count
-        if: |
-          env.FORCE_REVIEW == 'true'
-          || (
-            steps.resolve.outputs.draft != 'true'
-            && !contains(steps.resolve.outputs.labels, 'copilot:paused')
-            && !contains(steps.resolve.outputs.labels, 'copilot:loop-exhausted')
-          )
-        env:
-          PR: ${{ steps.resolve.outputs.pr }}
         run: |
-          set -euo pipefail
-          count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR}/timeline" \
-            | jq -s '
-                add // []
-                | [.[] | select(
-                    .event == "review_requested"
-                    and (.requested_reviewer.login // "") == "Copilot"
-                  )]
-                | length
-              ')
-          echo "Copilot has been requested $count time(s) on PR #$PR."
-          {
-            echo "count=$count"
-            if [ "${FORCE_REVIEW:-false}" = "true" ]; then
-              # Force-review bypasses the cap and never parks.
-              echo "park=false"
-            elif [ "$count" -ge "${MAX_COPILOT_REVIEWS}" ]; then
-              echo "park=true"
-            else
-              echo "park=false"
-            fi
-          } >> "$GITHUB_OUTPUT"
-          {
-            echo "### Copilot review counter"
-            echo ""
-            echo "- PR: #$PR"
-            echo "- Prior Copilot review requests: \`$count\`"
-            echo "- Cap: \`$MAX_COPILOT_REVIEWS\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/timeline" |
+            jq -s '
+              add // []
+              | [.[] | select(
+                  .event == "review_requested"
+                  and (.requested_reviewer.login // "") == "Copilot"
+                )]
+              | length
+            ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Copilot has been requested $count time(s) (max: $MAX_COPILOT_REVIEWS)"
 
-      - name: Request Copilot review
-        if: |
-          steps.count.outputs.count != ''
-          && steps.count.outputs.park == 'false'
-        env:
-          PR: ${{ steps.resolve.outputs.pr }}
-          IS_DRAFT: ${{ steps.resolve.outputs.draft }}
+      - name: Request Copilot Review
+        if: fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
-          set -euo pipefail
-          # Force-review may target a PR that is currently in draft
-          # (because the workflow earlier parked it). Mark it ready
-          # first; Copilot does not review drafts.
-          if [ "${FORCE_REVIEW:-false}" = "true" ] && [ "$IS_DRAFT" = "true" ]; then
-            gh pr ready "$PR" --repo "$GH_REPO" \
-              || echo "::warning::failed to mark PR ready before force-review"
-          fi
-          # gh pr edit --add-reviewer @copilot (cli v2.88.0+) is the
-          # canonical path; fall back to the REST workaround when the
-          # runner has an older gh.
-          if ! gh pr edit "$PR" --repo "$GH_REPO" --add-reviewer @copilot 2>err.log; then
-            echo "::warning::gh pr edit --add-reviewer @copilot failed; trying REST"
-            cat err.log >&2 || true
-            gh api --method POST \
-              "repos/${GH_REPO}/pulls/${PR}/requested_reviewers" \
-              -f "reviewers[]=copilot-pull-request-reviewer[bot]" >/dev/null \
-              || { echo "::error::REST fallback also failed"; exit 1; }
-          fi
-          gh pr edit "$PR" --repo "$GH_REPO" --remove-label copilot:loop-exhausted 2>/dev/null || true
-          if [ "${FORCE_REVIEW:-false}" = "true" ]; then
-            # Remove the trigger label so subsequent pushes go through
-            # the normal cap-checked path.
-            gh pr edit "$PR" --repo "$GH_REPO" --remove-label "copilot:force-review" 2>/dev/null || true
-            echo "Requested Copilot review on PR #$PR (force)." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Requested Copilot review on PR #$PR." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Park PR in draft mode at cap
-        if: steps.count.outputs.park == 'true'
-        env:
-          PR: ${{ steps.resolve.outputs.pr }}
-          COUNT: ${{ steps.count.outputs.count }}
-        run: |
-          set -euo pipefail
-          gh pr ready "$PR" --repo "$GH_REPO" --undo || echo "::warning::convert-to-draft failed"
-          gh pr edit "$PR" --repo "$GH_REPO" --add-label copilot:loop-exhausted || true
-          body=$(cat <<EOF
-          Babysitter parked this PR in draft mode after $COUNT Copilot review request(s)
-          (cap: $MAX_COPILOT_REVIEWS). Copilot does not review drafts, so further pushes
-          will not trigger automatic reviews.
-
-          To request one more Copilot review, add the \`copilot:force-review\` label.
-          The workflow will mark the PR ready, request Copilot once, and remove both
-          \`copilot:force-review\` and \`copilot:loop-exhausted\`. The lifetime counter
-          (this PR's timeline of \`review_requested\` events) is not reset.
-
-          To stop the workflow entirely on this PR, add \`copilot:paused\`.
-          EOF
-          )
-          gh pr comment "$PR" --repo "$GH_REPO" --body "$body" >/dev/null || true
-          {
-            echo "### Loop exhausted"
-            echo ""
-            echo "- Cap ($MAX_COPILOT_REVIEWS) reached after $COUNT Copilot review request(s)."
-            echo "- Converted to draft and labeled copilot:loop-exhausted."
-          } >> "$GITHUB_STEP_SUMMARY"
+          gh pr edit "$PR_NUMBER" --add-reviewer @copilot
