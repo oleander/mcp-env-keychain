@@ -1,6 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
-import { catalogPayload, deleteEnv, findEnvs, getPlain, listEnvs, runWithSecrets, saveEnv } from "./tools.ts";
+import {
+  catalogNamesPayload,
+  deleteEnv,
+  findEnvs,
+  getPlain,
+  listEnvs,
+  runWithSecrets,
+  saveEnv,
+} from "./tools.ts";
 import { loadIndex } from "./keychain.ts";
 import { KindSchema } from "./types.ts";
 
@@ -13,8 +21,8 @@ const BASE_INSTRUCTIONS = [
   "- First time per session that run_with_secrets is asked to inject a",
   "  secret-kind value, the user is prompted for Touch ID. Subsequent",
   "  calls in the same session are gate-free.",
-  "- A live catalog of stored envs is available as an MCP resource at",
-  "  `keychain://catalog` — read it for fresh state without calling a tool.",
+  "- A live resource with stored env names is available at",
+  "  `keychain://env-names` — read it for fresh state without calling a tool.",
 ].join("\n");
 
 export async function buildInstructions(): Promise<string> {
@@ -24,11 +32,11 @@ export async function buildInstructions(): Promise<string> {
       a.localeCompare(b),
     );
     if (entries.length === 0) {
-      return BASE_INSTRUCTIONS + "\n\nCatalog at handshake: (no envs stored yet)";
+      return BASE_INSTRUCTIONS + "\n\nEnv names at handshake: (no envs stored yet)";
     }
-    const lines = ["", "", "Catalog at handshake:"];
-    for (const [name, entry] of entries) {
-      lines.push(`  - ${name} (kind=${entry.kind})`);
+    const lines = ["", "", "Env names at handshake:"];
+    for (const [name] of entries) {
+      lines.push(`  - ${name}`);
     }
     return BASE_INSTRUCTIONS + lines.join("\n");
   } catch {
@@ -56,7 +64,7 @@ function toolText<T>(payload: T): {
 export async function buildServer(): Promise<McpServer> {
   const instructions = await buildInstructions();
   const server = new McpServer(
-    { name: "k-mcp", version: "0.2.0" },
+    { name: "mcp-env-keychain", version: "0.2.0" },
     { instructions },
   );
 
@@ -147,13 +155,13 @@ export async function buildServer(): Promise<McpServer> {
   );
 
   server.registerResource(
-    "keychain-catalog",
-    "keychain://catalog",
+    "keychain-env-names",
+    "keychain://env-names",
     {
-      title: "Stored envs catalog",
+      title: "Stored env names",
       description:
-        "Live list of all stored env names, their kind (plain or secret), and creation/update timestamps. " +
-        "Never includes values. Reflects current state on every read.",
+        "Live sorted unique array of stored env names only. " +
+        "No values, kinds, or timestamps. Reflects current state on every read.",
       mimeType: "application/json",
     },
     async (uri) => ({
@@ -161,7 +169,7 @@ export async function buildServer(): Promise<McpServer> {
         {
           uri: uri.href,
           mimeType: "application/json",
-          text: JSON.stringify(await catalogPayload()),
+          text: JSON.stringify(await catalogNamesPayload()),
         },
       ],
     }),

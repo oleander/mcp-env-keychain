@@ -27,6 +27,11 @@ export async function catalogPayload(): Promise<Catalog> {
   return { count: entries.length, entries };
 }
 
+export async function catalogNamesPayload(): Promise<string[]> {
+  const index = await loadIndex();
+  return [...new Set(Object.keys(index.entries))].sort((a, b) => a.localeCompare(b));
+}
+
 export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
   const name = args.name.trim();
   if (!name) return { ok: false, error: "name is required" };

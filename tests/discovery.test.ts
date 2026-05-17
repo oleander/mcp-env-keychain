@@ -5,7 +5,7 @@ import { buildServer, buildInstructions } from "../src/server.ts";
 import { saveEnv } from "../src/tools.ts";
 import { setupTestEnv } from "./helpers.ts";
 
-describe("k-mcp discovery surfaces", () => {
+describe("mcp-env-keychain discovery surfaces", () => {
   beforeEach(() => {
     setupTestEnv();
   });
@@ -16,9 +16,9 @@ describe("k-mcp discovery surfaces", () => {
     await saveEnv({ name: "BACKEND_URL", value: PLAIN_VALUE, kind: "plain" });
     await saveEnv({ name: "STRIPE_API_KEY", value: SECRET_VALUE, kind: "secret" });
     const text = await buildInstructions();
-    expect(text).toContain("Catalog at handshake:");
-    expect(text).toContain("BACKEND_URL (kind=plain)");
-    expect(text).toContain("STRIPE_API_KEY (kind=secret)");
+    expect(text).toContain("Env names at handshake:");
+    expect(text).toContain("BACKEND_URL");
+    expect(text).toContain("STRIPE_API_KEY");
     expect(text).not.toContain(PLAIN_VALUE);
     expect(text).not.toContain(SECRET_VALUE);
   });
@@ -28,35 +28,29 @@ describe("k-mcp discovery surfaces", () => {
     expect(text).toContain("(no envs stored yet)");
   });
 
-  test("keychain://catalog resource reflects live state on every read", async () => {
+  test("keychain://env-names resource reflects live state on every read", async () => {
     const server = await buildServer();
     const [ct, st] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0.0.0" });
     await server.connect(st);
     await client.connect(ct);
 
-    const empty = await client.readResource({ uri: "keychain://catalog" });
+    const empty = await client.readResource({ uri: "keychain://env-names" });
     const emptyFirst = empty.contents[0];
     if (emptyFirst === undefined || !("text" in emptyFirst) || typeof emptyFirst.text !== "string") {
       throw new Error("empty catalog read returned no text content");
     }
-    const emptyPayload = JSON.parse(emptyFirst.text) as { count: number; entries: unknown[] };
-    expect(emptyPayload.count).toBe(0);
-    expect(emptyPayload.entries).toEqual([]);
+    const emptyPayload = JSON.parse(emptyFirst.text) as string[];
+    expect(emptyPayload).toEqual([]);
 
     await saveEnv({ name: "NEW_URL", value: "u", kind: "plain" });
 
-    const filled = await client.readResource({ uri: "keychain://catalog" });
+    const filled = await client.readResource({ uri: "keychain://env-names" });
     const filledFirst = filled.contents[0];
     if (filledFirst === undefined || !("text" in filledFirst) || typeof filledFirst.text !== "string") {
       throw new Error("filled catalog read returned no text content");
     }
-    const filledPayload = JSON.parse(filledFirst.text) as {
-      count: number;
-      entries: Array<{ name: string; kind: string }>;
-    };
-    expect(filledPayload.count).toBe(1);
-    expect(filledPayload.entries[0]?.name).toBe("NEW_URL");
-    expect(filledPayload.entries[0]?.kind).toBe("plain");
+    const filledPayload = JSON.parse(filledFirst.text) as string[];
+    expect(filledPayload).toEqual(["NEW_URL"]);
   });
 });

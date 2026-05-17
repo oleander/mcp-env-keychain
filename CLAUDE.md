@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`k-mcp` is a macOS-only MCP server (TypeScript on Bun, stdio transport) that stores env-var values in the macOS Keychain and lets an LLM use them — without ever returning secret values to the chat transcript. Run with `bun run src/index.ts`. Registered for Claude Code via `claude mcp add -s user k-mcp -- bun run /Users/linus/Code/k-mcp/src/index.ts`.
+`mcp-env-keychain` is a macOS-only MCP server (TypeScript on Bun, stdio transport) that stores env-var values in the macOS Keychain and lets an LLM use them — without ever returning secret values to the chat transcript. Run with `bun run src/index.ts`. Registered for Claude Code via `claude mcp add -s user k-mcp -- bunx --package @oleander/mcp-env-keychain k-mcp`.
 
 ## Commands
 
@@ -35,11 +35,11 @@ The TS type system pins this: `Result<{kind: "plain"; value: string}>` for `get_
 
 ### Discovery surfaces (LLM-facing)
 
-Two complementary mechanisms expose what's stored, both metadata-only:
-1. **`instructions` at server construction** — `buildInstructions()` reads the index at startup and embeds a catalog snapshot directly into the MCP `initialize` response. Static for the session.
-2. **`keychain://catalog` resource** — re-reads the index on every `resources/read` call, so it reflects live state after any `save_env`/`delete_env` mid-session.
+Two complementary mechanisms expose what's stored:
+1. **`instructions` at server construction** — `buildInstructions()` reads the index at startup and embeds a name snapshot directly into the MCP `initialize` response. Static for the session.
+2. **`keychain://env-names` resource** — re-reads the index on every `resources/read` call and returns a sorted, unique JSON array of env names only.
 
-Both surfaces include name + kind + timestamps; never values. The `tests/discovery.test.ts` and `tests/protocol.test.ts` files pin this contract.
+Neither surface returns values. The `tests/discovery.test.ts` and `tests/protocol.test.ts` files pin this contract.
 
 ### Secret-leak defenses (defense-in-depth)
 
@@ -76,7 +76,7 @@ tests/
   helpers.ts          — setupTestEnv() — in-memory keychain + tempdir index + no-op auth
   smoke.test.ts       — every tool through its direct function entry
   protocol.test.ts    — client ↔ server over InMemoryTransport; secret-absence audit
-  discovery.test.ts   — instructions + keychain://catalog
+  discovery.test.ts   — instructions + keychain://env-names
   touchid.test.ts     — gate fires once per session; failure path
 ```
 

@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setIndexPath } from "../src/keychain.ts";
 
-const TMP = mkdtempSync(join(tmpdir(), "k-mcp-live-"));
+const TMP = mkdtempSync(join(tmpdir(), "mcp-env-keychain-live-"));
 setIndexPath(join(TMP, "index.json"));
 
 const PLAIN_NAME = "k_mcp_live_verify_url";

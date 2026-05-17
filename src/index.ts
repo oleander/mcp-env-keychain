@@ -20,6 +20,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error("k-mcp fatal:", err);
+  console.error("mcp-env-keychain fatal:", err);
   process.exit(1);
 });
