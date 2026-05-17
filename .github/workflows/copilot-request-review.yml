@@ -23,10 +23,25 @@ concurrency:
 
 env:
   MAX_COPILOT_REVIEWS: "5"
-  # Use your cloud-agent login here:
-  CLOUD_AGENT_LOGIN: "copilot-cloud-agent[bot]"
-  # Use your code-review agent login here:
-  CODE_REVIEWER_LOGIN: "copilot-pull-request-reviewer[bot]"
+  # In pull_request_review webhook payloads, Copilot bots present
+  # review.user.login as the display alias "Copilot" rather than the
+  # REST-API login (copilot-pull-request-reviewer[bot] /
+  # copilot-swe-agent[bot]). We discriminate by numeric user.id, which is
+  # stable across every GH API surface.
+  CODE_REVIEWER_USER_ID: "175728472"  # copilot-pull-request-reviewer[bot]
+  # TODO: capture copilot-swe-agent[bot] user.id from the next live cloud-
+  # agent review and pin it here; until then Branch A falls back to a
+  # tolerant login-substring match.
+  # Globally stable GraphQL bot node ID for copilot-pull-request-reviewer
+  # (login: copilot-pull-request-reviewer, createdAt: 2024-07-16). Used by
+  # the requestReviews mutation, which is the only call that re-triggers
+  # Copilot after it has already reviewed — the REST
+  # /requested_reviewers POST silently no-ops on re-request.
+  # Cross-reference: microsoft/vscode-pull-request-github exports the same
+  # constant at src/common/copilot.ts:12 (COPILOT_REVIEWER_ID).
+  # Re-verify both magic values with:
+  #   gh api graphql -f query='query{node(id:"BOT_kgDOCnlnWA"){__typename ... on Bot{login databaseId createdAt}}}'
+  COPILOT_BOT_NODE_ID: "BOT_kgDOCnlnWA"
 
 jobs:
   main:
@@ -40,7 +55,11 @@ jobs:
     steps:
       # ==== CLOUDBOT: Resolve threads after its review ====
       - name: Resolve threads after cloud-agent review
-        if: github.event.review.user.login == env.CLOUD_AGENT_LOGIN
+        if: |
+          github.event.review.user.type == 'Bot' &&
+          github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID) &&
+          (contains(github.event.review.user.login, 'swe-agent') ||
+           contains(github.event.review.user.login, 'cloud-agent'))
         env:
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
@@ -75,7 +94,13 @@ jobs:
             threadId=$(echo $thread | jq -r '.id')
             isResolved=$(echo $thread | jq -r '.isResolved')
             author=$(echo $thread | jq -r '.comments.nodes[0].author.login')
-            if [ "$author" = "$CLOUD_AGENT_LOGIN" ] && [ "$isResolved" = "false" ]; then
+            # GraphQL response uses the long-form bot login
+            # (copilot-swe-agent[bot] or copilot-cloud-agent[bot]); match either.
+            case "$author" in
+              *swe-agent*|*cloud-agent*) is_cloud_agent=1 ;;
+              *) is_cloud_agent=0 ;;
+            esac
+            if [ "$is_cloud_agent" = "1" ] && [ "$isResolved" = "false" ]; then
               echo "Resolving thread $threadId…"
               gh api graphql -F id="$threadId" -f query='
                 mutation($id: ID!) {
@@ -92,7 +117,7 @@ jobs:
       # ==== CODE-REVIEW: Only request review if not code-review agent & under max ====
       - name: Count prior Copilot review requests
         id: count
-        if: github.event.review.user.login != env.CODE_REVIEWER_LOGIN
+        if: github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID)
         run: |
           count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/timeline" |
             jq -s '
@@ -108,30 +133,56 @@ jobs:
 
       - name: Request Copilot review if under limit
         if: |
-          github.event.review.user.login != env.CODE_REVIEWER_LOGIN &&
+          github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID) &&
           fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
+        env:
+          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          echo "Requesting review from copilot-pull-request-reviewer[bot]…"
-          gh api --method POST \
-            "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
-            -f "reviewers[]=${CODE_REVIEWER_LOGIN}" \
-            >/dev/null
+          set -euo pipefail
+          echo "Requesting Copilot review for PR #${PR_NUMBER} (node ${PR_NODE_ID})…"
 
-          pending=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
-            --jq '[.users[].login] | join(",")')
-          echo "Pending reviewers after request: ${pending:-<none>}"
+          # Two attempts with a 90s backoff to escape Copilot's dedup window.
+          # The REST /requested_reviewers POST is documented to silently no-op
+          # on re-request after Copilot has already reviewed; only the GraphQL
+          # requestReviews mutation with botIds reliably re-triggers the bot.
+          # GITHUB_TOKEN can call this mutation but is silently a no-op for
+          # the Copilot bot — COPILOT_REQUEST_PAT is required for it to fire.
+          for attempt in 1 2; do
+            if ! response=$(gh api graphql \
+              -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{pullRequestId:$pr, botIds:[$bot]}){pullRequest{id}}}' \
+              -f pr="$PR_NODE_ID" \
+              -f bot="$COPILOT_BOT_NODE_ID" 2>&1); then
+              echo "::error::GraphQL requestReviews failed (attempt $attempt): $response"
+              exit 1
+            fi
+            echo "attempt $attempt mutation response: $response"
 
-          if ! echo ",${pending}," | grep -iq ",copilot,"; then
-            echo "::error::Copilot was not added as a PR reviewer."
-            echo "TIP: Set the COPILOT_REQUEST_PAT secret to a PAT with 'Pull requests: write', 'repo', and 'graphql' scopes for full functionality."
-            exit 1
-          else
-            echo "✅ Copilot review requested successfully."
-          fi
+            # Allow propagation, then verify Copilot is actually pending review.
+            sleep 15
+            pending=$(gh api graphql \
+              -f query='query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewRequests(first:100){nodes{requestedReviewer{__typename ... on Bot{login}}}}}}}' \
+              -f o="$REPO_OWNER" -f n="$REPO_NAME" -F pr="$PR_NUMBER" \
+              --jq '[.data.repository.pullRequest.reviewRequests.nodes[]?.requestedReviewer | select(.login == "copilot-pull-request-reviewer")] | length')
+
+            if [ "$pending" -gt 0 ]; then
+              echo "✅ Verified: Copilot is in reviewRequests (attempt $attempt)."
+              exit 0
+            fi
+
+            echo "::warning::Mutation succeeded but Copilot not in reviewRequests (attempt $attempt) — likely dedup window."
+            if [ "$attempt" = "1" ]; then
+              echo "Waiting 90s before retry…"
+              sleep 90
+            fi
+          done
+
+          echo "::warning::Copilot did not enter reviewRequests after 2 attempts (likely dedup window). Exiting 0; the next review submission will retry."
 
       - name: Post info if Copilot review limit is reached
         if: |
-          github.event.review.user.login != env.CODE_REVIEWER_LOGIN &&
+          github.event.review.user.id != fromJSON(env.CODE_REVIEWER_USER_ID) &&
           fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
           echo "Copilot review request limit ($MAX_COPILOT_REVIEWS) reached. No further reviews will be requested automatically."
