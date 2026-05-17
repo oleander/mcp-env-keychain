@@ -1,3 +1,4 @@
+import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   keychain,
   loadIndex,
@@ -15,12 +16,27 @@ import type {
   EnvMetadata,
   FindEnvsResult,
   GetPlainResult,
+  Kind,
   ListEnvsResult,
   Result,
   RunResult,
   SaveEnvArgs,
   SaveEnvResult,
 } from "./types.ts";
+
+// ---- Elicitation seam ----
+//
+// When a save_env call hits the looks-secret/plain conflict, we ask the user
+// via the client's elicitation channel instead of refusing outright. server.ts
+// wires this to `mcpServer.server.elicitInput`; tests inject a stub via
+// helpers.installElicitStub. When unset (or when the client lacks the
+// elicitation capability and the call throws), we fall back to the old refuse
+// behavior, so legacy clients see no change.
+type ElicitFn = (params: ElicitRequestFormParams) => Promise<ElicitResult>;
+let elicitFn: ElicitFn | null = null;
+export function setElicitFn(fn: ElicitFn | null): void {
+  elicitFn = fn;
+}
 
 // ---- Index-changed notifier seam ----
 //
@@ -75,18 +91,65 @@ export async function getEnvMetadata(rawName: string): Promise<Result<{ metadata
   };
 }
 
+const SECRET_CONFLICT_HELP =
+  "looks like a secret. Re-call with kind='secret' (recommended), " +
+  "or rename it if it really is non-sensitive.";
+
+function refuseSecretAsPlain(name: string): SaveEnvResult {
+  return {
+    ok: false,
+    error: `Refusing to save '${name}' as kind='plain' because the name ${SECRET_CONFLICT_HELP}`,
+  };
+}
+
+async function resolveKindOnConflict(name: string): Promise<Kind | null> {
+  // Returns the kind to actually persist with, or null to refuse.
+  // - elicitFn unset / throws / cancel: null (preserve legacy refuse behavior)
+  // - decline: "plain" (user explicitly wanted plain)
+  // - accept + saveAsSecret=true: "secret"
+  // - accept + saveAsSecret=false: "plain"
+  if (!elicitFn) return null;
+  let result: ElicitResult;
+  try {
+    result = await elicitFn({
+      mode: "form",
+      message:
+        `'${name}' looks like a secret but you asked to save it as kind='plain'. ` +
+        `Save as 'secret' instead? (Recommended.)`,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          saveAsSecret: {
+            type: "boolean",
+            title: "Save as secret",
+            description: "Yes = store as kind='secret' (only usable via run_with_secrets).",
+          },
+        },
+        required: ["saveAsSecret"],
+      },
+    });
+  } catch {
+    // Client lacks elicitation capability, or transport error — fall back to
+    // the legacy refuse behavior so v0.2.x clients keep working identically.
+    return null;
+  }
+  if (result.action === "accept") {
+    const saveAsSecret = result.content?.saveAsSecret;
+    return saveAsSecret === false ? "plain" : "secret";
+  }
+  if (result.action === "decline") return "plain";
+  return null; // cancel
+}
+
 export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
   const name = normalizeName(args.name);
   if (!name) return { ok: false, error: "name is required" };
 
-  if (args.kind === "plain" && looksSecret(name)) {
-    return {
-      ok: false,
-      error:
-        `Refusing to save '${name}' as kind='plain' because the name ` +
-        "looks like a secret. Re-call with kind='secret' (recommended), " +
-        "or rename it if it really is non-sensitive.",
-    };
+  let kind: Kind = args.kind;
+  if (kind === "plain" && looksSecret(name)) {
+    const resolved = await resolveKindOnConflict(name);
+    if (resolved === null) return refuseSecretAsPlain(name);
+    kind = resolved;
   }
 
   await keychain().setPassword(name, args.value);
@@ -95,7 +158,7 @@ export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
   const existing = index.entries[name];
   const ts = now();
   const entry: Entry = {
-    kind: args.kind,
+    kind,
     created_at: existing?.created_at ?? ts,
     updated_at: ts,
   };
@@ -103,7 +166,7 @@ export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
   await saveIndex(index);
   notifyIndexChanged();
 
-  return { ok: true, name, kind: args.kind };
+  return { ok: true, name, kind };
 }
 
 export async function listEnvs(): Promise<ListEnvsResult> {

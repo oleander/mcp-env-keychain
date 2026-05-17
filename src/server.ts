@@ -2,6 +2,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import * as z from "zod/v4";
 import pkg from "../package.json" with { type: "json" };
 import { loadIndex } from "./keychain.ts";
+import { auditStalePrompt, importEnvFilePrompt } from "./prompts.ts";
 import {
   catalogNamesPayload,
   deleteEnv,
@@ -11,6 +12,7 @@ import {
   listEnvs,
   runWithSecrets,
   saveEnv,
+  setElicitFn,
   setOnIndexChange,
 } from "./tools.ts";
 import { KindSchema } from "./types.ts";
@@ -84,6 +86,12 @@ export async function buildServer(): Promise<McpServer> {
       // Server not yet connected to a transport — fine, this is fire-and-forget.
     }
   });
+
+  // Wire the elicitation seam to the underlying server's elicitInput. Tools
+  // that call the seam get a real client interaction when the client supports
+  // elicitation; the call rejects when it doesn't, and tools fall back to the
+  // legacy refuse path.
+  setElicitFn((params) => server.server.elicitInput(params));
 
   server.registerTool(
     "save_env",
@@ -244,6 +252,14 @@ export async function buildServer(): Promise<McpServer> {
       ],
     }),
   );
+
+  // ---- Prompts ----
+  server.registerPrompt(
+    importEnvFilePrompt.name,
+    importEnvFilePrompt.config,
+    importEnvFilePrompt.handler,
+  );
+  server.registerPrompt(auditStalePrompt.name, auditStalePrompt.config, auditStalePrompt.handler);
 
   return server;
 }
