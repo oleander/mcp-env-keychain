@@ -105,7 +105,9 @@ bun run compile    # compile to dist/mcp-env-keychain
 
 ## Releases
 
-Pushing a tag like `v0.2.1` triggers the `Release` GitHub Actions workflow, which verifies the package, builds a precompiled macOS binary, uploads `mcp-env-keychain-macos-<arch>.tar.gz` to the GitHub release, and publishes `@oleander/mcp-env-keychain` to GitHub Packages. Manual release runs from `main` bump `package.json` (`patch`, `minor`, or `major`), commit the version bump, and create the matching GitHub release tag.
+Releases are automatic: every PR merged into `main` triggers the `Auto release on PR merge` workflow, which dispatches the `Release` workflow with a `patch` bump. The release workflow bumps `package.json`, commits the bump to `main`, pushes the matching `vX.Y.Z` tag, builds the precompiled macOS binary, creates a GitHub Release with auto-generated notes from the merged PRs, and publishes `@oleander/mcp-env-keychain` to GitHub Packages.
+
+For a minor or major bump, run the `Release` workflow manually from the Actions tab and pick the bump level. Pushing a `v*` tag directly also still works.
 
 ## Troubleshooting
 
