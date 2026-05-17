@@ -126,10 +126,36 @@ jobs:
             review_user_type="$INPUT_REVIEW_USER_TYPE"
             review_user_id="$INPUT_REVIEW_USER_ID"
             review_user_login="$INPUT_REVIEW_USER_LOGIN"
-            # Reject non-numeric pr_number — it interpolates into a gh api path.
+            reject_multiline() {
+              local name="$1"
+              local value="$2"
+              case "$value" in
+                *$'\n'*|*$'\r'*)
+                  echo "::error::$name must be a single-line value"
+                  exit 1
+                  ;;
+              esac
+            }
+
+            # Validate dispatch inputs before they are written to GITHUB_OUTPUT.
+            reject_multiline "review_user_login" "$review_user_login"
             case "$pr_number" in
+              ''|0*|*[!0-9]*)
+                echo "::error::pr_number must be a positive integer without leading zeros"
+                exit 1
+                ;;
+            esac
+            case "$review_user_type" in
+              Bot|User)
+                ;;
+              *)
+                echo "::error::review_user_type must be Bot or User"
+                exit 1
+                ;;
+            esac
+            case "$review_user_id" in
               ''|*[!0-9]*)
-                echo "::error::pr_number must be a positive integer (got: '$pr_number')"
+                echo "::error::review_user_id must be numeric"
                 exit 1
                 ;;
             esac
@@ -142,11 +168,11 @@ jobs:
             pr_node_id="$WEBHOOK_PR_NODE_ID"
           fi
           {
-            echo "pr_number=$pr_number"
-            echo "pr_node_id=$pr_node_id"
-            echo "review_user_type=$review_user_type"
-            echo "review_user_id=$review_user_id"
-            echo "review_user_login=$review_user_login"
+            printf 'pr_number=%s\n' "$pr_number"
+            printf 'pr_node_id=%s\n' "$pr_node_id"
+            printf 'review_user_type=%s\n' "$review_user_type"
+            printf 'review_user_id=%s\n' "$review_user_id"
+            printf 'review_user_login=%s\n' "$review_user_login"
           } >> "$GITHUB_OUTPUT"
 
       # ==== DEBUG: print every value used by step `if:` conditions ====
@@ -310,7 +336,11 @@ jobs:
       # ==== CODE-REVIEW: Only request review if not code-review agent & under max ====
       - name: Count prior Copilot review requests
         id: count
-        if: steps.vars.outputs.review_user_id != env.CODE_REVIEWER_USER_ID
+        if: |
+          steps.vars.outputs.review_user_id != env.CODE_REVIEWER_USER_ID &&
+          !(steps.vars.outputs.review_user_type == 'Bot' &&
+            (contains(steps.vars.outputs.review_user_login, 'swe-agent') ||
+             contains(steps.vars.outputs.review_user_login, 'cloud-agent')))
         run: |
           count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/timeline" |
             jq -s '
@@ -327,6 +357,9 @@ jobs:
       - name: Request Copilot review if under limit
         if: |
           steps.vars.outputs.review_user_id != env.CODE_REVIEWER_USER_ID &&
+          !(steps.vars.outputs.review_user_type == 'Bot' &&
+            (contains(steps.vars.outputs.review_user_login, 'swe-agent') ||
+             contains(steps.vars.outputs.review_user_login, 'cloud-agent'))) &&
           fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
         env:
           PR_NODE_ID: ${{ steps.vars.outputs.pr_node_id }}
@@ -376,6 +409,9 @@ jobs:
       - name: Post info if Copilot review limit is reached
         if: |
           steps.vars.outputs.review_user_id != env.CODE_REVIEWER_USER_ID &&
+          !(steps.vars.outputs.review_user_type == 'Bot' &&
+            (contains(steps.vars.outputs.review_user_login, 'swe-agent') ||
+             contains(steps.vars.outputs.review_user_login, 'cloud-agent'))) &&
           fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
           echo "Copilot review request limit ($MAX_COPILOT_REVIEWS) reached. No further reviews will be requested automatically."
