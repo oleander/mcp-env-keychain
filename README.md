@@ -21,14 +21,18 @@ Secrets are only usable via `run_with_secrets`, which injects them into a subpro
 
 ```bash
 npm config set @oleander:registry https://npm.pkg.github.com
-npm login --scope=@oleander --auth-type=legacy --registry=https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"
+```
 
+Then launch the server:
+
+```bash
 bunx --package @oleander/mcp-env-keychain@0.2.1 k-mcp
 # or
 npx --yes --package=@oleander/mcp-env-keychain@0.2.1 k-mcp
 ```
 
-Use your GitHub username for `npm login` and a token with `read:packages` as the password. `npx` is supported as a package launcher, but it still needs `bun` on `PATH` because this MCP server uses Bun-specific APIs.
+The auth command assumes you are logged into the GitHub CLI with a token that has package access. To check, run `gh auth status`. `npx` is supported as a package launcher, but it still needs `bun` on `PATH` because this MCP server uses Bun-specific APIs.
 
 Do not include `run` in these commands. `npx run @oleander/mcp-env-keychain@0.2.1` and `bunx run @oleander/mcp-env-keychain@0.2.1` try to execute a different `run` command/package instead of the `k-mcp` binary.
 
@@ -106,6 +110,6 @@ Pushing a tag like `v0.2.1` triggers the `Release` GitHub Actions workflow, whic
 - **No Touch ID prompt appears:** Touch ID is requested only when `run_with_secrets` injects at least one `secret` key. Plain-only runs do not prompt.
 - **Prompt appears only once:** This is expected; unlock is cached for the server process/session lifetime.
 - **`bun: command not found`:** install Bun and ensure it is on `PATH`.
-- **GitHub Packages install returns 401/403:** run `npm login --scope=@oleander --auth-type=legacy --registry=https://npm.pkg.github.com` with a GitHub token that can read packages.
+- **GitHub Packages install returns 401/403:** run `gh auth status` and confirm the active token has `read:packages` or `write:packages`, then run `npm config set //npm.pkg.github.com/:_authToken "$(gh auth token)"`.
 - **`get_plain` refuses a key:** the entry was saved as `secret`; use `run_with_secrets`.
 - **Index path in tests/automation:** set `K_MCP_INDEX_PATH` to point at a custom index file.
