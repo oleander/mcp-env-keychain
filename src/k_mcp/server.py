@@ -22,7 +22,11 @@ from fastmcp import FastMCP
 from . import _security as _sec
 
 SERVICE = "mcp-env"
-INDEX_PATH = Path.home() / ".config" / "mcp-keychain" / "index.json"
+# Index path can be overridden via env var (used by tests to point at a tempdir).
+INDEX_PATH = Path(
+    os.environ.get("K_MCP_INDEX_PATH")
+    or (Path.home() / ".config" / "mcp-keychain" / "index.json")
+)
 SECRET_HINT_TOKENS = ("KEY", "SECRET", "TOKEN", "PASS", "PWD", "CRED", "AUTH")
 
 # Session-scoped Touch ID gate. Once True, no further biometric prompts this
@@ -31,19 +35,49 @@ _session_unlocked: bool = False
 
 Kind = Literal["plain", "secret"]
 
-mcp = FastMCP(
-    "k-mcp",
-    instructions=(
-        "Stores env values (URLs, API keys, tokens) in the macOS Keychain.\n"
-        "- Plain values (kind='plain') are retrievable via get_plain.\n"
-        "- Secret values (kind='secret') can ONLY be used via run_with_secrets,\n"
-        "  which injects them into a subprocess env without exposing them in tool\n"
-        "  output. Never request, print, or paraphrase secret values directly.\n"
-        "- First time per session that run_with_secrets is asked to inject a\n"
-        "  secret-kind value, the user is prompted for Touch ID. Subsequent\n"
-        "  calls in the same session are gate-free."
-    ),
+
+def _load_index() -> dict:
+    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not INDEX_PATH.exists():
+        return {"entries": {}}
+    return json.loads(INDEX_PATH.read_text())
+
+
+_BASE_INSTRUCTIONS = (
+    "Stores env values (URLs, API keys, tokens) in the macOS Keychain.\n"
+    "- Plain values (kind='plain') are retrievable via get_plain.\n"
+    "- Secret values (kind='secret') can ONLY be used via run_with_secrets,\n"
+    "  which injects them into a subprocess env without exposing them in tool\n"
+    "  output. Never request, print, or paraphrase secret values directly.\n"
+    "- First time per session that run_with_secrets is asked to inject a\n"
+    "  secret-kind value, the user is prompted for Touch ID. Subsequent\n"
+    "  calls in the same session are gate-free.\n"
+    "- A live catalog of stored envs is available as an MCP resource at\n"
+    "  `keychain://catalog` — read it for fresh state without calling a tool."
 )
+
+
+def _build_instructions() -> str:
+    """Compose server instructions including a snapshot of the catalog.
+
+    This snapshot is the catalog at SERVER STARTUP. For live data within a
+    session, read the ``keychain://catalog`` resource.
+    """
+    try:
+        index = _load_index()
+    except Exception:
+        return _BASE_INSTRUCTIONS
+    entries = sorted(index.get("entries", {}).items())
+    if not entries:
+        return _BASE_INSTRUCTIONS + "\n\nCatalog at handshake: (no envs stored yet)"
+    lines = ["\n\nCatalog at handshake:"]
+    for name, entry in entries:
+        kind = entry.get("kind", "?")
+        lines.append(f"  - {name} (kind={kind})")
+    return _BASE_INSTRUCTIONS + "\n".join(lines)
+
+
+mcp = FastMCP("k-mcp", instructions=_build_instructions())
 
 
 def _ensure_unlocked(secret_names: list[str]) -> None:
@@ -61,13 +95,6 @@ def _ensure_unlocked(secret_names: list[str]) -> None:
     )
     _sec.authenticate(reason)
     _session_unlocked = True
-
-
-def _load_index() -> dict:
-    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not INDEX_PATH.exists():
-        return {"entries": {}}
-    return json.loads(INDEX_PATH.read_text())
 
 
 def _save_index(index: dict) -> None:
@@ -95,6 +122,32 @@ def _scrub(text: str, secrets: dict[str, str]) -> str:
         if len(value) >= 4:
             text = text.replace(value, f"[REDACTED:{name}]")
     return text
+
+
+def _catalog_payload() -> dict:
+    """Build the catalog dict — names, kinds, timestamps. No values, ever."""
+    index = _load_index()
+    return {
+        "count": len(index["entries"]),
+        "entries": sorted(
+            ({"name": n, **e} for n, e in index["entries"].items()),
+            key=lambda x: x["name"],
+        ),
+    }
+
+
+@mcp.resource(
+    "keychain://catalog",
+    name="Stored envs catalog",
+    description=(
+        "Live list of all stored env names, their kind (plain or secret), "
+        "and creation/update timestamps. Never includes values. Reflects "
+        "current state on every read."
+    ),
+    mime_type="application/json",
+)
+def keychain_catalog() -> dict:
+    return _catalog_payload()
 
 
 @mcp.tool
