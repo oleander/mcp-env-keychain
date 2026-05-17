@@ -14,3 +14,5 @@ security, reliability, and maintainability.
 
 Reference for the code-review feature:
 <https://docs.github.com/en/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review#example>
+
+<!-- smoke-test-claude marker: 2026-05-17T20:48:30Z -->
