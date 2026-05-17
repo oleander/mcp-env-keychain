@@ -31,9 +31,9 @@ jobs:
       - name: Package binary
         run: |
           ARCH="$(uname -m)"
-          tar -C dist -czf "dist/k-mcp-macos-${ARCH}.tar.gz" k-mcp
+          tar -C dist -czf "dist/mcp-env-keychain-macos-${ARCH}.tar.gz" mcp-env-keychain
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/k-mcp-macos-*.tar.gz
+          files: dist/mcp-env-keychain-macos-*.tar.gz
