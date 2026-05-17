@@ -235,7 +235,7 @@ class SecurityFrameworkBackend implements KeychainBackend {
     const password = Buffer.from(value);
     const itemRef = allocPtrSlot();
 
-    let r = sec.symbols.SecKeychainAddGenericPassword(
+    const r = sec.symbols.SecKeychainAddGenericPassword(
       null,
       service.length,
       service,
