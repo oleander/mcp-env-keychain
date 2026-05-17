@@ -6,18 +6,15 @@ import { auditStalePrompt, importEnvFilePrompt } from "./prompts.ts";
 import {
   catalogNamesPayload,
   deleteEnv,
-  findEnvs,
   getEnvMetadata,
   getPlain,
   listEnvs,
   runWithSecrets,
   saveEnv,
-  setElicitFn,
   setOnIndexChange,
 } from "./tools.ts";
 import {
   DeleteEnvOutput,
-  FindEnvsOutput,
   GetPlainOutput,
   KindSchema,
   ListEnvsOutput,
@@ -35,7 +32,6 @@ const BASE_INSTRUCTIONS = [
   "  secret-kind value, the user is prompted for Touch ID. Subsequent",
   "  calls in the same session are gate-free.",
   "- Live resources:",
-  "    `keychain://env-names`      — flat sorted list of names (legacy alias).",
   "    `keychain://env/{name}`     — per-env metadata (kind + timestamps, no value).",
   "  Clients can also enumerate via the resource template's list callback.",
 ].join("\n");
@@ -97,12 +93,6 @@ export async function buildServer(): Promise<McpServer> {
     });
   });
 
-  // Wire the elicitation seam to the underlying server's elicitInput. Tools
-  // that call the seam get a real client interaction when the client supports
-  // elicitation; the call rejects when it doesn't, and tools fall back to the
-  // legacy refuse path.
-  setElicitFn((params) => server.server.elicitInput(params));
-
   server.registerTool(
     "save_env",
     {
@@ -136,23 +126,6 @@ export async function buildServer(): Promise<McpServer> {
       },
     },
     async () => toolText(await listEnvs()),
-  );
-
-  server.registerTool(
-    "find_envs",
-    {
-      description:
-        "Search stored env names by case-insensitive substring. Returns matching names with their kind. Values are NEVER returned.",
-      inputSchema: {
-        pattern: z.string(),
-      },
-      outputSchema: FindEnvsOutput,
-      annotations: {
-        readOnlyHint: true,
-        idempotentHint: true,
-      },
-    },
-    async ({ pattern }) => toolText(await findEnvs(pattern)),
   );
 
   server.registerTool(
@@ -219,12 +192,9 @@ export async function buildServer(): Promise<McpServer> {
 
   // ---- Resources ----
   //
-  // Two surfaces over the same data:
-  //   1) keychain://env/{name}   — parameterized template, returns metadata.
-  //      The `list` callback enumerates the full catalog so clients can
-  //      browse without a tool call. `complete.name` autocompletes from the
-  //      current index.
-  //   2) keychain://env-names    — legacy alias from v0.2.x, flat name array.
+  // keychain://env/{name} — parameterized template, returns metadata.
+  // The `list` callback enumerates the full catalog so clients can browse
+  // without a tool call. `complete.name` autocompletes from the current index.
 
   server.registerResource(
     "keychain-env",
@@ -277,27 +247,6 @@ export async function buildServer(): Promise<McpServer> {
         ],
       };
     },
-  );
-
-  server.registerResource(
-    "keychain-env-names",
-    "keychain://env-names",
-    {
-      title: "Stored env names (legacy alias)",
-      description:
-        "Live sorted unique array of stored env names only. " +
-        "No values, kinds, or timestamps. Prefer the `keychain://env/{name}` template for richer access.",
-      mimeType: "application/json",
-    },
-    async (uri) => ({
-      contents: [
-        {
-          uri: uri.href,
-          mimeType: "application/json",
-          text: JSON.stringify(await catalogNamesPayload()),
-        },
-      ],
-    }),
   );
 
   // ---- Prompts ----

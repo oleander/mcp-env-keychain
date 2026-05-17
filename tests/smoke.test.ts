@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadIndex } from "../src/keychain.ts";
-import { deleteEnv, findEnvs, getPlain, listEnvs, runWithSecrets, saveEnv } from "../src/tools.ts";
+import { deleteEnv, getPlain, listEnvs, runWithSecrets, saveEnv } from "../src/tools.ts";
 import { setupTestEnv } from "./helpers.ts";
 
 describe("mcp-env-keychain tools (smoke)", () => {
@@ -44,15 +44,6 @@ describe("mcp-env-keychain tools (smoke)", () => {
     for (const e of r.entries) {
       expect("value" in e).toBe(false);
     }
-  });
-
-  test("find_envs does case-insensitive substring match", async () => {
-    await saveEnv({ name: "STRIPE_API_KEY", value: "sk_x", kind: "secret" });
-    await saveEnv({ name: "BACKEND_URL", value: "u", kind: "plain" });
-    const r = await findEnvs("stripe");
-    expect(r.count).toBe(1);
-    expect(r.entries[0]?.name).toBe("STRIPE_API_KEY");
-    expect("value" in (r.entries[0] ?? {})).toBe(false);
   });
 
   test("get_plain retrieves a plain value", async () => {
