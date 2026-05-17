@@ -21,7 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: ${{ github.token }}
+      # Prefer a PAT with `Pull requests: write` over the default
+      # GITHUB_TOKEN: the latter cannot request reviews from GitHub
+      # Apps (Copilot is `copilot-pull-request-reviewer[bot]`) and
+      # the API returns success without performing the mutation.
+      GH_TOKEN: ${{ secrets.COPILOT_REQUEST_PAT || github.token }}
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
@@ -43,4 +47,18 @@ jobs:
       - name: Request Copilot Review
         if: fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
-          gh pr edit "$PR_NUMBER" --add-reviewer @copilot
+          set -euo pipefail
+          gh api --method POST \
+            "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
+            -f "reviewers[]=copilot-pull-request-reviewer[bot]" \
+            >/dev/null
+
+          # The POST may silently no-op under GITHUB_TOKEN (one App
+          # cannot request reviews from another), so verify post-state.
+          current=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
+            --jq '[.users[].login] | join(",")')
+          echo "Pending reviewers after request: ${current:-<none>}"
+          if ! echo ",${current}," | grep -q ",Copilot,"; then
+            echo "::error::Copilot was not added to the PR. Set the COPILOT_REQUEST_PAT secret to a PAT with 'Pull requests: write' on this repo — the default GITHUB_TOKEN cannot request reviews from GitHub Apps."
+            exit 1
+          fi
