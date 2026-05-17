@@ -226,7 +226,11 @@ export async function runWithSecrets(args: {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill();
+    // SIGKILL so the subprocess goes away immediately. Plain SIGTERM lets
+    // `bash -lc 'cmd; sleep N'` wait for `sleep` to finish before exiting,
+    // which on slow CI runners pushes the test past bun:test's per-test
+    // timeout even when our own logical timeout fired at the right moment.
+    proc.kill("SIGKILL");
   }, timeout * 1000);
 
   let stdoutText = "";
