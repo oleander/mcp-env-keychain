@@ -41,6 +41,62 @@ export type RunErr = Err & {
 };
 export type RunResult = RunOk | RunErr;
 
+// ---- Output schemas (zod) ----
+//
+// MCP requires structuredContent to be a JSON-schema "object" at the top
+// level, so each output schema is a flat z.object. Variant-specific fields
+// are optional and discriminated at runtime by `ok`. The richer Result<T>
+// invariant lives in the TS types above — readers should treat the runtime
+// payload as `Result<...>` and not rely on JSON-schema discriminators.
+
+const CatalogEntrySchema = z.object({
+  name: z.string(),
+  kind: KindSchema,
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const SaveEnvOutput = z.object({
+  ok: z.boolean(),
+  name: z.string().optional(),
+  kind: KindSchema.optional(),
+  error: z.string().optional(),
+});
+
+export const ListEnvsOutput = z.object({
+  count: z.number().int().nonnegative(),
+  entries: z.array(CatalogEntrySchema),
+});
+
+export const FindEnvsOutput = z.object({
+  pattern: z.string(),
+  count: z.number().int().nonnegative(),
+  entries: z.array(CatalogEntrySchema),
+});
+
+export const GetPlainOutput = z.object({
+  ok: z.boolean(),
+  name: z.string().optional(),
+  kind: z.literal("plain").optional(),
+  value: z.string().optional(),
+  error: z.string().optional(),
+});
+
+export const DeleteEnvOutput = z.object({
+  ok: z.boolean(),
+  name: z.string().optional(),
+  error: z.string().optional(),
+});
+
+export const RunWithSecretsOutput = z.object({
+  ok: z.boolean(),
+  exit_code: z.number().int().optional(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+  injected_keys: z.array(z.string()).optional(),
+  error: z.string().optional(),
+});
+
 // ---- Persisted index schema ----
 //
 // Validated on every loadIndex. A corrupt file is backed up and we start

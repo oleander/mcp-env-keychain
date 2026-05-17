@@ -11,7 +11,15 @@ import {
   runWithSecrets,
   saveEnv,
 } from "./tools.ts";
-import { KindSchema } from "./types.ts";
+import {
+  DeleteEnvOutput,
+  FindEnvsOutput,
+  GetPlainOutput,
+  KindSchema,
+  ListEnvsOutput,
+  RunWithSecretsOutput,
+  SaveEnvOutput,
+} from "./types.ts";
 
 const BASE_INSTRUCTIONS = [
   "Stores env values (URLs, API keys, tokens) in the macOS Keychain.",
@@ -78,6 +86,10 @@ export async function buildServer(): Promise<McpServer> {
         value: z.string(),
         kind: KindSchema,
       },
+      outputSchema: SaveEnvOutput,
+      annotations: {
+        idempotentHint: true,
+      },
     },
     async (args) => toolText(await saveEnv(args)),
   );
@@ -88,6 +100,11 @@ export async function buildServer(): Promise<McpServer> {
       description:
         "List all stored env names with their kind and timestamps. Values are NEVER returned by this tool.",
       inputSchema: {},
+      outputSchema: ListEnvsOutput,
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+      },
     },
     async () => toolText(await listEnvs()),
   );
@@ -99,6 +116,11 @@ export async function buildServer(): Promise<McpServer> {
         "Search stored env names by case-insensitive substring. Returns matching names with their kind. Values are NEVER returned.",
       inputSchema: {
         pattern: z.string(),
+      },
+      outputSchema: FindEnvsOutput,
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
       },
     },
     async ({ pattern }) => toolText(await findEnvs(pattern)),
@@ -112,6 +134,11 @@ export async function buildServer(): Promise<McpServer> {
       inputSchema: {
         name: z.string(),
       },
+      outputSchema: GetPlainOutput,
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+      },
     },
     async ({ name }) => toolText(await getPlain(name)),
   );
@@ -122,6 +149,11 @@ export async function buildServer(): Promise<McpServer> {
       description: "Remove an env from both Keychain and the index.",
       inputSchema: {
         name: z.string(),
+      },
+      outputSchema: DeleteEnvOutput,
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
       },
     },
     async ({ name }) => toolText(await deleteEnv(name)),
@@ -139,6 +171,10 @@ export async function buildServer(): Promise<McpServer> {
         env_keys: z.array(z.string()),
         cwd: z.string().optional(),
         timeout: z.number().int().positive().optional(),
+      },
+      outputSchema: RunWithSecretsOutput,
+      annotations: {
+        openWorldHint: true,
       },
     },
     async (args) =>
