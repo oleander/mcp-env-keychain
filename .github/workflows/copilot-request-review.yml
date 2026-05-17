@@ -1,19 +1,17 @@
-# Copilot Request Review Workflow
+# Unified Copilot Review & Thread Resolution Workflow
 #
-# Purpose:
-# Automatically requests a review from the Copilot code-review agent (`copilot-pull-request-reviewer[bot]`)
-# whenever a code review is submitted on a pull request. To prevent infinite review loops between the
-# cloud-agent and code-review-agent, the workflow counts prior Copilot review requests and enforces a
-# configurable maximum (MAX_COPILOT_REVIEWS, default: 5).
+# - When Copilot cloud-agent submits a review:
+#     → Resolves all review threads where the last reply is from the cloud-agent.
+# - When anyone ELSE submits a review (not code-review agent):
+#     → Requests a code-review from Copilot code-review agent, with a configurable max to avoid loops.
 #
-# A Personal Access Token (PAT) with `Pull requests: write` permissions is preferred, as the GitHub
-# Actions default token cannot request reviews from GitHub Apps.
-name: Copilot Request Review
+# Requires GH CLI, jq, and a COPILOT_REQUEST_PAT with `pull requests: write` and `repo` & `graphql` scopes.
+
+name: Copilot Review and Resolve
 
 on:
   pull_request_review:
-    types:
-      - submitted
+    types: [submitted]
 
 permissions:
   contents: read
@@ -25,30 +23,76 @@ concurrency:
 
 env:
   MAX_COPILOT_REVIEWS: "5"
+  # Use your cloud-agent login here:
+  CLOUD_AGENT_LOGIN: "copilot-cloud-agent[bot]"
+  # Use your code-review agent login here:
+  CODE_REVIEWER_LOGIN: "copilot-pull-request-reviewer[bot]"
 
 jobs:
-  request-review:
+  main:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     env:
       GH_TOKEN: ${{ secrets.COPILOT_REQUEST_PAT || github.token }}
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
-      - name: Ensure required tools
+      # ==== CLOUDBOT: Resolve threads after its review ====
+      - name: Resolve threads after cloud-agent review
+        if: github.event.review.user.login == env.CLOUD_AGENT_LOGIN
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if ! command -v gh >/dev/null; then
-            echo "::error::GitHub CLI (gh) is not installed!"
-            exit 1
-          fi
-          if ! command -v jq >/dev/null; then
-            echo "::error::jq is not installed!"
-            exit 1
-          fi
+          echo "Resolving review threads where cloud-agent replied…"
 
+          prNodeId=$(gh api graphql -F owner="$OWNER" -F name="$REPO" -F number="$PR_NUMBER" -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewThreads(first: 100) {
+                    nodes {
+                      id
+                      isResolved
+                      comments(last: 1) {
+                        nodes {
+                          author { login }
+                          body
+                          createdAt
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' --jq '.data.repository.pullRequest.reviewThreads.nodes' > threads.json)
+
+          count=0
+          jq -c '.' threads.json | jq -c '.[]' | while read thread; do
+            threadId=$(echo $thread | jq -r '.id')
+            isResolved=$(echo $thread | jq -r '.isResolved')
+            author=$(echo $thread | jq -r '.comments.nodes[0].author.login')
+            if [ "$author" = "$CLOUD_AGENT_LOGIN" ] && [ "$isResolved" = "false" ]; then
+              echo "Resolving thread $threadId…"
+              gh api graphql -F id="$threadId" -f query='
+                mutation($id: ID!) {
+                  resolveReviewThread(input: {threadId: $id}) {
+                    thread { id isResolved }
+                  }
+                }
+              ' > /dev/null
+              count=$((count+1))
+            fi
+          done
+          echo "Resolved $count thread(s)."
+
+      # ==== CODE-REVIEW: Only request review if not code-review agent & under max ====
       - name: Count prior Copilot review requests
         id: count
+        if: github.event.review.user.login != env.CODE_REVIEWER_LOGIN
         run: |
           count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/timeline" |
             jq -s '
@@ -63,31 +107,31 @@ jobs:
           echo "Copilot has been requested $count time(s) (max: $MAX_COPILOT_REVIEWS)"
 
       - name: Request Copilot review if under limit
-        if: fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
+        if: |
+          github.event.review.user.login != env.CODE_REVIEWER_LOGIN &&
+          fromJSON(steps.count.outputs.count) < fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
-          set -euo pipefail
-
-          echo "Requesting review from copilot-pull-request-reviewer[bot]..."
-
+          echo "Requesting review from copilot-pull-request-reviewer[bot]…"
           gh api --method POST \
             "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
-            -f "reviewers[]=copilot-pull-request-reviewer[bot]" \
+            -f "reviewers[]=${CODE_REVIEWER_LOGIN}" \
             >/dev/null
 
-          # Verify if Copilot review is actually pending
           pending=$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
             --jq '[.users[].login] | join(",")')
           echo "Pending reviewers after request: ${pending:-<none>}"
 
           if ! echo ",${pending}," | grep -iq ",copilot,"; then
             echo "::error::Copilot was not added as a PR reviewer."
-            echo "TIP: Set the COPILOT_REQUEST_PAT secret to a PAT with 'Pull requests: write' in your repository, as the Actions default GITHUB_TOKEN cannot request reviews from GitHub Apps."
+            echo "TIP: Set the COPILOT_REQUEST_PAT secret to a PAT with 'Pull requests: write', 'repo', and 'graphql' scopes for full functionality."
             exit 1
           else
             echo "✅ Copilot review requested successfully."
           fi
 
       - name: Post info if Copilot review limit is reached
-        if: fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_COPILOT_REVIEWS)
+        if: |
+          github.event.review.user.login != env.CODE_REVIEWER_LOGIN &&
+          fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_COPILOT_REVIEWS)
         run: |
           echo "Copilot review request limit ($MAX_COPILOT_REVIEWS) reached. No further reviews will be requested automatically."
