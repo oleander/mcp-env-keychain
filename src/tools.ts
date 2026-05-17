@@ -1,4 +1,12 @@
-import { keychain, loadIndex, looksSecret, now, saveIndex, scrub } from "./keychain.ts";
+import {
+  keychain,
+  loadIndex,
+  looksSecret,
+  normalizeName,
+  now,
+  saveIndex,
+  scrub,
+} from "./keychain.ts";
 import { ensureUnlocked, TouchIDAuthFailed, TouchIDNotAvailable } from "./touchid.ts";
 import type {
   Catalog,
@@ -27,7 +35,7 @@ export async function catalogNamesPayload(): Promise<string[]> {
 }
 
 export async function saveEnv(args: SaveEnvArgs): Promise<SaveEnvResult> {
-  const name = args.name.trim();
+  const name = normalizeName(args.name);
   if (!name) return { ok: false, error: "name is required" };
 
   if (args.kind === "plain" && looksSecret(name)) {
@@ -61,7 +69,7 @@ export async function listEnvs(): Promise<ListEnvsResult> {
 }
 
 export async function findEnvs(pattern: string): Promise<FindEnvsResult> {
-  const pat = pattern.toLowerCase();
+  const pat = pattern.trim().toLowerCase();
   const index = await loadIndex();
   const matches = Object.entries(index.entries)
     .filter(([n]) => n.toLowerCase().includes(pat))
@@ -70,7 +78,9 @@ export async function findEnvs(pattern: string): Promise<FindEnvsResult> {
   return { pattern, count: matches.length, entries: matches };
 }
 
-export async function getPlain(name: string): Promise<GetPlainResult> {
+export async function getPlain(rawName: string): Promise<GetPlainResult> {
+  const name = normalizeName(rawName);
+  if (!name) return { ok: false, error: "name is required" };
   const index = await loadIndex();
   const entry = index.entries[name];
   if (!entry) return { ok: false, error: `no env named '${name}'` };
@@ -93,7 +103,9 @@ export async function getPlain(name: string): Promise<GetPlainResult> {
   return { ok: true, name, kind: "plain", value };
 }
 
-export async function deleteEnv(name: string): Promise<DeleteEnvResult> {
+export async function deleteEnv(rawName: string): Promise<DeleteEnvResult> {
+  const name = normalizeName(rawName);
+  if (!name) return { ok: false, error: "name is required" };
   const index = await loadIndex();
   if (!(name in index.entries)) {
     return { ok: false, error: `no env named '${name}'` };
@@ -135,7 +147,8 @@ export async function runWithSecrets(args: {
     return { ok: false, error: "command is required" };
   }
 
-  const keys = dedupe(args.env_keys ?? []);
+  // Normalize + dedupe each requested key so " FOO " and "FOO" resolve the same.
+  const keys = dedupe((args.env_keys ?? []).map(normalizeName).filter((k) => k.length > 0));
   const index = await loadIndex();
   const unknown = keys.filter((k) => !(k in index.entries));
   if (unknown.length > 0) {

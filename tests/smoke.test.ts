@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { loadIndex } from "../src/keychain.ts";
 import { deleteEnv, findEnvs, getPlain, listEnvs, runWithSecrets, saveEnv } from "../src/tools.ts";
 import { setupTestEnv } from "./helpers.ts";
 
@@ -116,5 +119,66 @@ describe("mcp-env-keychain tools (smoke)", () => {
     expect((await deleteEnv("BACKEND_URL")).ok).toBe(true);
     expect((await deleteEnv("STRIPE_API_KEY")).ok).toBe(true);
     expect((await listEnvs()).count).toBe(0);
+  });
+});
+
+describe("index reliability (B2, B3, B4)", () => {
+  beforeEach(() => {
+    setupTestEnv();
+  });
+
+  // B2: normalizeName at every entry point
+  test("untrimmed names are normalized symmetrically across all tools", async () => {
+    const saved = await saveEnv({ name: "  PADDED_URL  ", value: "u", kind: "plain" });
+    expect(saved.ok).toBe(true);
+    if (saved.ok) expect(saved.name).toBe("PADDED_URL");
+
+    // Lookup with different whitespace — should still find it.
+    const found = await getPlain(" PADDED_URL\t");
+    expect(found.ok).toBe(true);
+    if (found.ok) expect(found.value).toBe("u");
+
+    // Delete with surrounding whitespace.
+    const deleted = await deleteEnv("PADDED_URL ");
+    expect(deleted.ok).toBe(true);
+  });
+
+  test("run_with_secrets normalizes each env_keys entry", async () => {
+    await saveEnv({ name: "BACKEND_URL", value: "https://x.com", kind: "plain" });
+    const r = await runWithSecrets({
+      command: "echo $BACKEND_URL",
+      env_keys: ["  BACKEND_URL\t"],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.stdout).toContain("https://x.com");
+      expect(r.injected_keys).toEqual(["BACKEND_URL"]);
+    }
+  });
+
+  // B4: corrupt index recovery
+  test("loadIndex backs up a corrupt file and starts with an empty index", async () => {
+    const { indexFile, dir } = setupTestEnv();
+    // Plant a corrupt index that's valid JSON but fails the IndexSchema.
+    writeFileSync(indexFile, JSON.stringify({ entries: "not-an-object" }));
+
+    const loaded = await loadIndex();
+    expect(loaded.entries).toEqual({});
+
+    const siblings = readdirSync(dir);
+    const backup = siblings.find((f) => f.startsWith("index.json.corrupt."));
+    expect(backup).toBeDefined();
+    expect(existsSync(join(dir, backup!))).toBe(true);
+  });
+
+  test("loadIndex backs up an unparseable JSON file too", async () => {
+    const { indexFile, dir } = setupTestEnv();
+    writeFileSync(indexFile, "not valid json {{{");
+
+    const loaded = await loadIndex();
+    expect(loaded.entries).toEqual({});
+
+    const siblings = readdirSync(dir);
+    expect(siblings.some((f) => f.startsWith("index.json.corrupt."))).toBe(true);
   });
 });

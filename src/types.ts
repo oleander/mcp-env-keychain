@@ -35,6 +35,20 @@ export type RunOk = Ok<{
 export type RunErr = Err & { injected_keys?: string[] };
 export type RunResult = RunOk | RunErr;
 
+// ---- Persisted index schema ----
+//
+// Validated on every loadIndex. A corrupt file is backed up and we start
+// fresh — bricking the server on a hand-edit isn't worth it.
+const EntrySchema = z.object({
+  kind: KindSchema,
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const IndexSchema = z.object({
+  entries: z.record(z.string(), EntrySchema),
+});
+
 export const SaveEnvInput = z.object({
   name: z.string(),
   value: z.string(),
