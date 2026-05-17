@@ -13,12 +13,7 @@ export const SECRET_HINT_TOKENS = [
   "AUTH",
 ] as const;
 
-export const DEFAULT_INDEX_PATH = join(
-  homedir(),
-  ".config",
-  "mcp-keychain",
-  "index.json",
-);
+export const DEFAULT_INDEX_PATH = join(homedir(), ".config", "mcp-keychain", "index.json");
 
 export function resolveIndexPath(): string {
   const override = process.env.K_MCP_INDEX_PATH;

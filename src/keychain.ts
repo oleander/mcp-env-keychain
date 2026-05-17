@@ -1,7 +1,7 @@
+import { dlopen, FFIType, type Pointer, ptr, read, toArrayBuffer } from "bun:ffi";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { dlopen, FFIType, ptr, read, toArrayBuffer, type Pointer } from "bun:ffi";
-import { SERVICE, SECRET_HINT_TOKENS, resolveIndexPath } from "./constants.ts";
+import { resolveIndexPath, SECRET_HINT_TOKENS, SERVICE } from "./constants.ts";
 import type { Index } from "./types.ts";
 
 export interface KeychainBackend {
@@ -36,18 +36,26 @@ const errSecDuplicateItem = -25299;
 const sec = dlopen(SEC_LIB, {
   SecKeychainAddGenericPassword: {
     args: [
-      FFIType.ptr, FFIType.u32, FFIType.ptr,
-      FFIType.u32, FFIType.ptr,
-      FFIType.u32, FFIType.ptr,
+      FFIType.ptr,
+      FFIType.u32,
+      FFIType.ptr,
+      FFIType.u32,
+      FFIType.ptr,
+      FFIType.u32,
+      FFIType.ptr,
       FFIType.ptr,
     ],
     returns: FFIType.i32,
   },
   SecKeychainFindGenericPassword: {
     args: [
-      FFIType.ptr, FFIType.u32, FFIType.ptr,
-      FFIType.u32, FFIType.ptr,
-      FFIType.ptr, FFIType.ptr,
+      FFIType.ptr,
+      FFIType.u32,
+      FFIType.ptr,
+      FFIType.u32,
+      FFIType.ptr,
+      FFIType.ptr,
+      FFIType.ptr,
       FFIType.ptr,
     ],
     returns: FFIType.i32,
@@ -93,9 +101,13 @@ class SecurityFrameworkBackend implements KeychainBackend {
     const itemRef = allocPtrSlot();
 
     const r = sec.symbols.SecKeychainFindGenericPassword(
-      null, service.length, service,
-      account.length, account,
-      passLenPtr, passData.addr,
+      null,
+      service.length,
+      service,
+      account.length,
+      account,
+      passLenPtr,
+      passData.addr,
       itemRef.addr,
     );
 
@@ -124,9 +136,13 @@ class SecurityFrameworkBackend implements KeychainBackend {
     const password = Buffer.from(value);
 
     let r = sec.symbols.SecKeychainAddGenericPassword(
-      null, service.length, service,
-      account.length, account,
-      password.length, password,
+      null,
+      service.length,
+      service,
+      account.length,
+      account,
+      password.length,
+      password,
       null,
     );
 
@@ -134,28 +150,31 @@ class SecurityFrameworkBackend implements KeychainBackend {
       // Item exists — find its ref, then modify the data field.
       const itemRef = allocPtrSlot();
       r = sec.symbols.SecKeychainFindGenericPassword(
-        null, service.length, service,
-        account.length, account,
-        null, null,
+        null,
+        service.length,
+        service,
+        account.length,
+        account,
+        null,
+        null,
         itemRef.addr,
       );
       if (r !== errSecSuccess) {
-        throw new Error(
-          `SecKeychainFindGenericPassword during upsert failed (OSStatus ${r})`,
-        );
+        throw new Error(`SecKeychainFindGenericPassword during upsert failed (OSStatus ${r})`);
       }
       const itemRefPtr = readPtr(itemRef);
       try {
         r = sec.symbols.SecKeychainItemModifyAttributesAndData(
-          itemRefPtr, null, password.length, password,
+          itemRefPtr,
+          null,
+          password.length,
+          password,
         );
       } finally {
         if (Number(itemRefPtr) !== 0) cf.symbols.CFRelease(itemRefPtr);
       }
       if (r !== errSecSuccess) {
-        throw new Error(
-          `SecKeychainItemModifyAttributesAndData failed (OSStatus ${r})`,
-        );
+        throw new Error(`SecKeychainItemModifyAttributesAndData failed (OSStatus ${r})`);
       }
     } else if (r !== errSecSuccess) {
       // NEVER include `value` here — the err message must not leak it.
@@ -169,16 +188,18 @@ class SecurityFrameworkBackend implements KeychainBackend {
     const itemRef = allocPtrSlot();
 
     let r = sec.symbols.SecKeychainFindGenericPassword(
-      null, service.length, service,
-      account.length, account,
-      null, null,
+      null,
+      service.length,
+      service,
+      account.length,
+      account,
+      null,
+      null,
       itemRef.addr,
     );
     if (r === errSecItemNotFound) return;
     if (r !== errSecSuccess) {
-      throw new Error(
-        `SecKeychainFindGenericPassword during delete failed (OSStatus ${r})`,
-      );
+      throw new Error(`SecKeychainFindGenericPassword during delete failed (OSStatus ${r})`);
     }
     const itemRefPtr = readPtr(itemRef);
     try {
@@ -252,7 +273,7 @@ export function scrub(text: string, secrets: Record<string, string>): string {
 // produces: "2026-05-17T07:30:00+00:00"
 export function now(): string {
   const d = new Date();
-  const iso = d.toISOString();                // "2026-05-17T07:30:00.123Z"
+  const iso = d.toISOString(); // "2026-05-17T07:30:00.123Z"
   const noMillis = iso.replace(/\.\d{3}Z$/, ""); // "2026-05-17T07:30:00"
   return `${noMillis}+00:00`;
 }
