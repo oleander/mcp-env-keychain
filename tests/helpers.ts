@@ -11,11 +11,17 @@ export function makeMemoryKeychain(): KeychainBackend {
     async getPassword(name) {
       return store.get(name) ?? null;
     },
-    async setPassword(name, value) {
+    async setPassword(name, value, _kind) {
       store.set(name, value);
     },
     async deletePassword(name) {
       store.delete(name);
+    },
+    async migrateLegacyEntry(_name, _kind) {
+      // No-op: the memory backend doesn't model the legacy/v2 layouts.
+      // Migration semantics are exercised by the dual-layout mock in
+      // tests/migration.test.ts.
+      return false;
     },
   };
 }

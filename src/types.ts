@@ -10,6 +10,7 @@ export type Entry = {
 };
 
 export type Index = {
+  version?: number | undefined;
   entries: Record<string, Entry>;
 };
 
@@ -103,6 +104,7 @@ const EntrySchema = z.object({
 });
 
 export const IndexSchema = z.object({
+  version: z.number().int().optional(),
   entries: z.record(z.string(), EntrySchema),
 });
 

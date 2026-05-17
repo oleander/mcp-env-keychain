@@ -33,8 +33,12 @@ Every tool that takes an env name routes through `normalizeName(s) = s.trim()` (
 
 ### Storage layout
 
-- **Values** live in the macOS Keychain under service name `mcp-env` (constant `SERVICE` in `src/constants.ts`). On-disk format is identical to the Python version this replaces, so existing entries continue to work.
-- **Metadata** (name → kind, created_at, updated_at) lives in `~/.config/mcp-keychain/index.json`. The two can fall out of sync (the code handles "in index, missing from Keychain" explicitly).
+- **Values** live in the macOS Keychain (v2 layout, `INDEX_VERSION = 2`):
+  - `serviceName` = the env var name (e.g. `STRIPE_API_KEY`). This is what Keychain Access shows in the **Name** column.
+  - `accountName` = `OWNER` (`"mcp-env"`, in `src/constants.ts`). Uniform across all our entries — lets users see at a glance which Keychain rows belong to mcp-env, and lets us reliably filter our entries among potential collisions.
+  - `kSecAttrDescription` = `"plain"` or `"secret"`. Set via a follow-up `SecKeychainItemModifyAttributesAndData` with a single-attribute `SecKeychainAttributeList`. Shows in the **Kind** column in Keychain Access. (The value itself is still encrypted at rest — no Keychain item class exposes raw cleartext.)
+- **Legacy v1 layout** (Python predecessor, pre-`INDEX_VERSION` files): single shared `serviceName="mcp-env"` with the env name in `accountName`. On startup, `loadIndex` runs a one-shot migration if `index.version !== INDEX_VERSION`. `migrateLegacyEntry` reads each legacy row, re-writes it under v2, deletes the legacy row, and stamps `version: 2` once all succeed. Partial failure withholds the version stamp so the next startup retries. Idempotent: re-migration is a no-op because v2-only entries have no legacy row to find.
+- **Metadata** (name → kind, created_at, updated_at; plus top-level `version`) lives in `~/.config/mcp-keychain/index.json`. The two can fall out of sync (the code handles "in index, missing from Keychain" explicitly).
 - **Writes are atomic.** `saveIndex` writes to a sibling `index.json.tmp.<pid>.<rand>`, `fsync`s, then `rename`s. A crash mid-write leaves an orphan temp (which the loader ignores) and never a partial final file.
 - **Reads are validated.** `loadIndex` zod-parses the file against `IndexSchema`. A corrupt or hand-edited file is backed up to `index.json.corrupt.<ts>` (logged to stderr) and we start with an empty index — better than bricking the server on one bad entry.
 - `K_MCP_INDEX_PATH` env var overrides the index location — used by tests to point at a tempdir.
@@ -74,7 +78,9 @@ Three independent layers prevent a secret value from reaching the chat:
 
 ### Keychain access
 
-`src/keychain.ts` calls `SecKeychainAddGenericPassword` / `Find` / `ModifyAttributesAndData` / `Delete` from `Security.framework` via `bun:ffi`. The value moves as a pointer-to-process-buffer, never as an argv element — so a `ps` snapshot can't observe it. Format-compat with the Python predecessor (PyObjC `keyring`) is verified: framework-written entries are readable by the `security` CLI and vice versa.
+`src/keychain.ts` calls `SecKeychainAddGenericPassword` / `Find` / `ModifyAttributesAndData` / `Delete` from `Security.framework` via `bun:ffi`. The value moves as a pointer-to-process-buffer, never as an argv element — so a `ps` snapshot can't observe it.
+
+**Setting the description attribute** uses an inline-built `SecKeychainAttributeList`. `buildDescriptionAttrList(kind)` allocates two `ArrayBuffer`s (`SecKeychainAttribute` = `{tag: u32; length: u32; data: void*}` → 16 bytes; `SecKeychainAttributeList` = `{count: u32; attr: SecKeychainAttribute*}` → 16 bytes incl. alignment) and packs `kSecDescriptionItemAttr` (`'desc'` = `0x64657363`) plus a pointer to the kind string bytes. The returned `keepAlive` struct must be referenced from the caller until the FFI call returns so GC can't reclaim the backing memory mid-call.
 
 The legacy `SecKeychain*` API is officially deprecated in favor of the modern `SecItem*` family (`SecItemAdd` / `SecItemCopyMatching` / `SecItemUpdate` / `SecItemDelete`). We use the legacy calls because they take plain C-string + length args; `SecItem*` requires constructing a `CFDictionary` of `CFString`/`CFData` values per call, which is significantly more FFI plumbing. Both work on every shipping macOS; if Apple ever ships the deprecation, the migration is mechanical.
 
@@ -94,7 +100,8 @@ src/
                     session-scoped; setAuth() test seam
   types.ts        — Kind, Entry, Index, Result discriminated unions; zod input + output schemas;
                     IndexSchema for persisted index validation
-  constants.ts    — SERVICE, SECRET_HINT_TOKENS, INDEX_PATH resolution
+  constants.ts    — OWNER (v2 accountName tag), LEGACY_SERVICE, INDEX_VERSION,
+                    SECRET_HINT_TOKENS, INDEX_PATH resolution
 tests/
   helpers.ts          — setupTestEnv, installAuthCounter, installFailingAuth
   smoke.test.ts       — every tool through its direct function entry; bug-fix coverage
@@ -104,6 +111,8 @@ tests/
                         ResourceTemplate list + read; list_changed seam
   prompts.test.ts     — prompts/list + getPrompt for both shipped prompts
   touchid.test.ts     — gate fires once per session; failure path
+  migration.test.ts   — legacy→v2 layout migration via a dual-layout mock backend;
+                        idempotency, partial-failure retry, version stamp
 ```
 
 ## When modifying
