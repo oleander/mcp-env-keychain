@@ -10,7 +10,7 @@
 #       → Requests a fresh code review from Copilot via the GraphQL
 #         requestReviews mutation, with a configurable per-PR cap.
 #
-# Requires GH CLI, jq, and a COPILOT_REQUEST_PAT. For a classic PAT, use
+# Requires GH CLI, Node.js, and a COPILOT_REQUEST_PAT. For a classic PAT, use
 # `repo`; for a fine-grained PAT, grant repository `Pull requests: write`.
 # There is no standalone `graphql` PAT scope. GITHUB_TOKEN silently no-ops
 # the requestReviews mutation for the Copilot bot — only a user PAT works.
@@ -33,15 +33,15 @@ on:
   # https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax
   # All inputs flow into the workflow exclusively through env: vars and
   # ${{ inputs.* }} expressions in `if:`/`group:` contexts — never
-  # interpolated directly inside a run: block.
+  # interpolated into shell source.
   workflow_dispatch:
     inputs:
       pr_number:
         description: 'PR number to operate on'
         required: true
         # type: number is rejected client-side for non-numeric values, so
-        # the runner blocks bad input before the job starts. The bash regex
-        # below in the resolver remains as defense-in-depth.
+        # the runner blocks bad input before the job starts. The script
+        # validation below in the resolver remains as defense-in-depth.
         type: number
       review_user_type:
         description: 'Synthesized github.event.review.user.type — gates the Bot-only cloud-agent branch'
@@ -103,19 +103,24 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
 
     steps:
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        with:
+          # Run automation from the commit that supplied this workflow, not
+          # from PR-head code, because this job has access to a write-capable PAT.
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
       - name: Validate required Copilot request token
         if: env.HAS_COPILOT_REQUEST_PAT != 'true'
-        run: |
-          echo "COPILOT_REQUEST_PAT is required for this workflow."
-          echo "GITHUB_TOKEN cannot request Copilot reviews via the GraphQL requestReviews mutation."
-          exit 1
+        run: node .github/scripts/copilot-review-and-resolve.mjs validate-token
 
       # ==== RESOLVE: unify webhook payload + workflow_dispatch inputs ====
       # All downstream `if:` conditions read steps.vars.outputs.* so they
       # behave identically under either trigger. On workflow_dispatch the
       # github.event.review.* fields are null — inputs synthesize them, and
       # pr_node_id is looked up via gh api against the validated PR number.
-      # Inputs flow through env: vars so they can't be injected into shell.
+      # Inputs flow through env: vars so they can't be injected into script source.
       - name: Resolve effective inputs
         id: vars
         env:
@@ -129,76 +134,11 @@ jobs:
           WEBHOOK_REVIEW_USER_TYPE: ${{ github.event.review.user.type }}
           WEBHOOK_REVIEW_USER_ID: ${{ github.event.review.user.id }}
           WEBHOOK_REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            pr_number="$INPUT_PR_NUMBER"
-            review_user_type="$INPUT_REVIEW_USER_TYPE"
-            # Strip leading zeros so the downstream string-compare against
-            # env.CODE_REVIEWER_USER_ID can't be defeated by "00175728472".
-            # printf '%d' would also normalize, but it re-interprets leading
-            # zeros as octal ("0123" → 83), so we precheck for digits-only
-            # input and then use a lexical sed strip — no base conversion.
-            case "$INPUT_REVIEW_USER_ID" in
-              ''|*[!0-9]*)
-                echo "::error::review_user_id must be a positive integer (got: '$INPUT_REVIEW_USER_ID')"
-                exit 1
-                ;;
-            esac
-            review_user_id=$(printf '%s' "$INPUT_REVIEW_USER_ID" | sed 's/^0*\([0-9]\)/\1/')
-            review_user_login="$INPUT_REVIEW_USER_LOGIN"
-            reject_multiline() {
-              local name="$1"
-              local value="$2"
-              case "$value" in
-                *$'\n'*|*$'\r'*)
-                  echo "::error::$name must be a single-line value"
-                  exit 1
-                  ;;
-              esac
-            }
-
-            # Validate dispatch inputs before they are written to GITHUB_OUTPUT.
-            reject_multiline "review_user_login" "$review_user_login"
-            case "$pr_number" in
-              ''|0*|*[!0-9]*)
-                echo "::error::pr_number must be a positive integer without leading zeros"
-                exit 1
-                ;;
-            esac
-            case "$review_user_type" in
-              Bot|User)
-                ;;
-              *)
-                echo "::error::review_user_type must be Bot or User"
-                exit 1
-                ;;
-            esac
-            case "$review_user_id" in
-              ''|*[!0-9]*)
-                echo "::error::review_user_id must be numeric"
-                exit 1
-                ;;
-            esac
-            pr_node_id=$(gh api "repos/$GH_REPO/pulls/$pr_number" --jq .node_id)
-          else
-            pr_number="$WEBHOOK_PR_NUMBER"
-            review_user_type="$WEBHOOK_REVIEW_USER_TYPE"
-            review_user_id="$WEBHOOK_REVIEW_USER_ID"
-            review_user_login="$WEBHOOK_REVIEW_USER_LOGIN"
-            pr_node_id="$WEBHOOK_PR_NODE_ID"
-          fi
-          {
-            printf 'pr_number=%s\n' "$pr_number"
-            printf 'pr_node_id=%s\n' "$pr_node_id"
-            printf 'review_user_type=%s\n' "$review_user_type"
-            printf 'review_user_id=%s\n' "$review_user_id"
-            printf 'review_user_login=%s\n' "$review_user_login"
-          } >> "$GITHUB_OUTPUT"
+        run: node .github/scripts/copilot-review-and-resolve.mjs resolve-effective-inputs
 
       # ==== DEBUG: print every value used by step `if:` conditions ====
       # No `if:` — always runs. Each comparison value goes through env: so
-      # untrusted strings (login, etc.) can't be injected into the shell.
+      # untrusted strings (login, etc.) can't be injected into script source.
       # Three groups are printed:
       #   1. raw webhook payload (populated only on pull_request_review)
       #   2. workflow_dispatch inputs (populated only on manual trigger)
@@ -234,49 +174,7 @@ jobs:
           OUT_REVIEW_USER_TYPE: ${{ steps.vars.outputs.review_user_type }}
           OUT_REVIEW_USER_ID: ${{ steps.vars.outputs.review_user_id }}
           OUT_REVIEW_USER_LOGIN: ${{ steps.vars.outputs.review_user_login }}
-        run: |
-          printf '=== raw webhook payload (pull_request_review only) ===\n'
-          printf '  review.user.id          = %q\n' "$REVIEW_USER_ID"
-          printf '  review.user.login       = %q\n' "$REVIEW_USER_LOGIN"
-          printf '  review.user.type        = %q\n' "$REVIEW_USER_TYPE"
-          printf '  review.user.node_id     = %q\n' "$REVIEW_USER_NODE_ID"
-          printf '  review.state            = %q\n' "$REVIEW_STATE"
-          printf '  review.id               = %q\n' "$REVIEW_ID"
-          printf '  review.submitted_at     = %q\n' "$REVIEW_SUBMITTED_AT"
-          printf '  review.author_assoc.    = %q\n' "$REVIEW_AUTHOR_ASSOCIATION"
-          printf '  review.commit_id        = %q\n' "$REVIEW_COMMIT_ID"
-          printf '  pull_request.number     = %q\n' "$PR_NUMBER_RAW"
-          printf '  pull_request.node_id    = %q\n' "$PR_NODE_ID_RAW"
-          printf '  pull_request.head.sha   = %q\n' "$PR_HEAD_SHA"
-          printf '  pull_request.head.ref   = %q\n' "$PR_HEAD_REF"
-          printf '  pull_request.draft      = %q\n' "$PR_DRAFT"
-          printf '  pull_request.user.login = %q\n' "$PR_AUTHOR_LOGIN"
-          printf '  github.actor            = %q\n' "$GH_ACTOR"
-          printf '  github.triggering_actor = %q\n' "$GH_TRIGGERING_ACTOR"
-          printf '  github.event_name       = %q\n' "$GH_EVENT_NAME"
-          printf '  github.repository       = %q\n' "$GH_REPOSITORY"
-          printf '  github.repository_owner = %q\n' "$GH_REPOSITORY_OWNER"
-          printf '\n=== workflow_dispatch inputs (manual trigger only) ===\n'
-          printf '  inputs.pr_number         = %q\n' "$INPUT_PR_NUMBER"
-          printf '  inputs.review_user_type  = %q\n' "$INPUT_REVIEW_USER_TYPE"
-          printf '  inputs.review_user_id    = %q\n' "$INPUT_REVIEW_USER_ID"
-          printf '  inputs.review_user_login = %q\n' "$INPUT_REVIEW_USER_LOGIN"
-          printf '\n=== resolver outputs — what step if-conditions read ===\n'
-          printf '  steps.vars.outputs.pr_number         = %q\n' "$OUT_PR_NUMBER"
-          printf '  steps.vars.outputs.pr_node_id        = %q\n' "$OUT_PR_NODE_ID"
-          printf '  steps.vars.outputs.review_user_type  = %q\n' "$OUT_REVIEW_USER_TYPE"
-          printf '  steps.vars.outputs.review_user_id    = %q\n' "$OUT_REVIEW_USER_ID"
-          printf '  steps.vars.outputs.review_user_login = %q\n' "$OUT_REVIEW_USER_LOGIN"
-          printf '\n=== env: constants that conditions compare against ===\n'
-          printf '  env.CODE_REVIEWER_USER_ID = %q\n' "$CODE_REVIEWER_USER_ID"
-          printf '  env.COPILOT_BOT_NODE_ID   = %q\n' "$COPILOT_BOT_NODE_ID"
-          printf '  env.MAX_COPILOT_REVIEWS   = %q\n' "$MAX_COPILOT_REVIEWS"
-          printf '\n=== derived booleans (mirrors step if-expressions) ===\n'
-          if [ "$OUT_REVIEW_USER_ID" = "$CODE_REVIEWER_USER_ID" ]; then is_code_reviewer=true; else is_code_reviewer=false; fi
-          case "$OUT_REVIEW_USER_LOGIN" in *swe-agent*|*cloud-agent*) login_swe_or_cloud=true ;; *) login_swe_or_cloud=false ;; esac
-          printf '  outputs.review_user_id == CODE_REVIEWER_USER_ID    -> %s\n' "$is_code_reviewer"
-          printf '  outputs.review_user_type == "Bot"                  -> %s\n' "$([ "$OUT_REVIEW_USER_TYPE" = "Bot" ] && echo true || echo false)"
-          printf '  outputs.review_user_login contains swe/cloud-agent -> %s\n' "$login_swe_or_cloud"
+        run: node .github/scripts/copilot-review-and-resolve.mjs debug-inputs
 
       # ==== CLOUDBOT: Resolve threads after its review ====
       - name: Resolve threads after cloud-agent review
@@ -288,55 +186,7 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
-        run: |
-          echo "Resolving review threads where cloud-agent replied…"
-
-          prNodeId=$(gh api graphql -F owner="$OWNER" -F name="$REPO" -F number="$PR_NUMBER" -f query='
-            query($owner: String!, $name: String!, $number: Int!) {
-              repository(owner: $owner, name: $name) {
-                pullRequest(number: $number) {
-                  reviewThreads(first: 100) {
-                    nodes {
-                      id
-                      isResolved
-                      comments(last: 1) {
-                        nodes {
-                          author { login }
-                          body
-                          createdAt
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          ' --jq '.data.repository.pullRequest.reviewThreads.nodes' > threads.json)
-
-          count=0
-          jq -c '.' threads.json | jq -c '.[]' | while read thread; do
-            threadId=$(echo $thread | jq -r '.id')
-            isResolved=$(echo $thread | jq -r '.isResolved')
-            author=$(echo $thread | jq -r '.comments.nodes[0].author.login')
-            # GraphQL response uses the long-form bot login
-            # (copilot-swe-agent[bot] or copilot-cloud-agent[bot]); match either.
-            case "$author" in
-              *swe-agent*|*cloud-agent*) is_cloud_agent=1 ;;
-              *) is_cloud_agent=0 ;;
-            esac
-            if [ "$is_cloud_agent" = "1" ] && [ "$isResolved" = "false" ]; then
-              echo "Resolving thread $threadId…"
-              gh api graphql -F id="$threadId" -f query='
-                mutation($id: ID!) {
-                  resolveReviewThread(input: {threadId: $id}) {
-                    thread { id isResolved }
-                  }
-                }
-              ' > /dev/null
-              count=$((count+1))
-            fi
-          done
-          echo "Resolved $count thread(s)."
+        run: node .github/scripts/copilot-review-and-resolve.mjs resolve-cloud-agent-threads
 
       # ==== CODE-REVIEWER: Prompt the cloud-agent to address its comments ====
       # Fires only when the code-reviewer bot (id 175728472) is the review
@@ -348,11 +198,7 @@ jobs:
       # to it).
       - name: Prompt cloud-agent after code-reviewer review
         if: steps.vars.outputs.review_user_id == env.CODE_REVIEWER_USER_ID
-        run: |
-          set -euo pipefail
-          echo "Code-reviewer submitted a review; prompting cloud-agent…"
-          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" \
-            --body "@copilot deal with ALL review comments"
+        run: node .github/scripts/copilot-review-and-resolve.mjs prompt-cloud-agent
 
       # ==== CODE-REVIEW: Only request review if not code-review agent & under max ====
       - name: Count prior Copilot review requests
@@ -362,18 +208,7 @@ jobs:
           !(steps.vars.outputs.review_user_type == 'Bot' &&
             (contains(steps.vars.outputs.review_user_login, 'swe-agent') ||
              contains(steps.vars.outputs.review_user_login, 'cloud-agent')))
-        run: |
-          count=$(gh api --paginate "repos/${GH_REPO}/issues/${PR_NUMBER}/timeline" |
-            jq -s '
-              add // []
-              | [.[] | select(
-                  .event == "review_requested"
-                  and (.requested_reviewer.login // "" | ascii_downcase) == "copilot"
-                )]
-              | length
-            ')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Copilot has been requested $count time(s) (max: $MAX_COPILOT_REVIEWS)"
+        run: node .github/scripts/copilot-review-and-resolve.mjs count-prior-copilot-review-requests
 
       - name: Request Copilot review if under limit
         if: |
@@ -386,46 +221,7 @@ jobs:
           PR_NODE_ID: ${{ steps.vars.outputs.pr_node_id }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
-        run: |
-          set -euo pipefail
-          echo "Requesting Copilot review for PR #${PR_NUMBER} (node ${PR_NODE_ID})…"
-
-          # Two attempts with a 90s backoff to escape Copilot's dedup window.
-          # The REST /requested_reviewers POST is documented to silently no-op
-          # on re-request after Copilot has already reviewed; only the GraphQL
-          # requestReviews mutation with botIds reliably re-triggers the bot.
-          # GITHUB_TOKEN can call this mutation but is silently a no-op for
-          # the Copilot bot — COPILOT_REQUEST_PAT is required for it to fire.
-          for attempt in 1 2; do
-            if ! response=$(gh api graphql \
-              -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{pullRequestId:$pr, botIds:[$bot]}){pullRequest{id}}}' \
-              -f pr="$PR_NODE_ID" \
-              -f bot="$COPILOT_BOT_NODE_ID" 2>&1); then
-              echo "::error::GraphQL requestReviews failed (attempt $attempt): $response"
-              exit 1
-            fi
-            echo "attempt $attempt mutation response: $response"
-
-            # Allow propagation, then verify Copilot is actually pending review.
-            sleep 15
-            pending=$(gh api graphql \
-              -f query='query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewRequests(first:100){nodes{requestedReviewer{__typename ... on Bot{login}}}}}}}' \
-              -f o="$REPO_OWNER" -f n="$REPO_NAME" -F pr="$PR_NUMBER" \
-              --jq '[.data.repository.pullRequest.reviewRequests.nodes[]?.requestedReviewer | select(.login == "copilot-pull-request-reviewer")] | length')
-
-            if [ "$pending" -gt 0 ]; then
-              echo "✅ Verified: Copilot is in reviewRequests (attempt $attempt)."
-              exit 0
-            fi
-
-            echo "::warning::Mutation succeeded but Copilot not in reviewRequests (attempt $attempt) — likely dedup window."
-            if [ "$attempt" = "1" ]; then
-              echo "Waiting 90s before retry…"
-              sleep 90
-            fi
-          done
-
-          echo "::warning::Copilot did not enter reviewRequests after 2 attempts (likely dedup window). Exiting 0; the next review submission will retry."
+        run: node .github/scripts/copilot-review-and-resolve.mjs request-copilot-review
 
       - name: Post info if Copilot review limit is reached
         if: |
@@ -434,5 +230,4 @@ jobs:
             (contains(steps.vars.outputs.review_user_login, 'swe-agent') ||
              contains(steps.vars.outputs.review_user_login, 'cloud-agent'))) &&
           fromJSON(steps.count.outputs.count) >= fromJSON(env.MAX_COPILOT_REVIEWS)
-        run: |
-          echo "Copilot review request limit ($MAX_COPILOT_REVIEWS) reached. No further reviews will be requested automatically."
+        run: node .github/scripts/copilot-review-and-resolve.mjs post-review-limit-reached
