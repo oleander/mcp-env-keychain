@@ -10,7 +10,7 @@
     "start": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
-    "compile": "bun build src/index.ts --compile --outfile dist/k-mcp"
+    "compile": "bun build --compile src/index.ts --outfile dist/mcp-env-keychain"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

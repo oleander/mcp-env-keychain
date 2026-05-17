@@ -84,8 +84,12 @@ From `package.json`:
 bun run start      # run server
 bun test           # test suite
 bun run typecheck  # tsc --noEmit
-bun run compile    # compile to dist/k-mcp
+bun run compile    # compile to dist/mcp-env-keychain
 ```
+
+## Releases
+
+Pushing a tag like `v0.2.1` now triggers the `Release` GitHub Actions workflow, which builds a precompiled macOS binary and uploads `mcp-env-keychain-macos-<arch>.tar.gz` to the GitHub release.
 
 ## Troubleshooting
 
